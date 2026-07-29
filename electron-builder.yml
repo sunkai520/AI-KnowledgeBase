@@ -1,0 +1,76 @@
+appId: sk_ai
+directories:
+  buildResources: build
+
+files:
+  - '!**/.vscode/*'
+  - '!src/*'
+  - '!electron.vite.config.{js,ts,mjs,cjs}'
+  - '!{.eslintignore,.eslintrc.cjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
+  - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
+  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+  - '!**/pdf-parse/test/**'
+  - '!**/*.map'
+  - '!**/.github/**'
+  - '!sessions/**'
+  - '!**/better-sqlite3/deps/**'
+extraFiles:
+  - from: build/chrome-sandbox
+    to: chrome-sandbox
+
+asarUnpack:
+  - resources/**
+  - '**/node_modules/@ffmpeg-installer/**'
+  - '**/node_modules/@ffprobe-installer/**'
+
+afterSign: build/notarize.js
+afterPack: build/afterPack.js
+
+win:
+  executableName: SKDAI
+  signAndEditExecutable: false
+
+nsis:
+  artifactName: ${productName}-${version}-setup.${ext}
+  shortcutName: ${productName}
+  uninstallDisplayName: ${productName}
+  createDesktopShortcut: always
+  runAfterFinish: false
+  oneClick: false
+  allowElevation: true
+  allowToChangeInstallationDirectory: true
+
+mac:
+  entitlementsInherit: build/entitlements.mac.plist
+  extendInfo:
+    - NSCameraUsageDescription: Application requests access to the device's camera.
+    - NSMicrophoneUsageDescription: Application requests access to the device's microphone.
+    - NSDocumentsFolderUsageDescription: Application requests access to the user's Documents folder.
+    - NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
+
+dmg:
+  artifactName: ${name}-${version}.${ext}
+
+linux:
+  target:
+    - AppImage
+    - snap
+    - deb
+  maintainer: electronjs.org
+  category: Utility
+
+deb:
+  priority: optional
+  afterInstall: build/set-chrome-sandbox-permissions.sh
+  afterRemove: build/clean.sh
+
+
+appImage:
+  artifactName: ${name}-${version}.${ext}
+
+npmRebuild: false
+
+publish:
+  provider: generic
+  url: https://example.com/auto-updates
+

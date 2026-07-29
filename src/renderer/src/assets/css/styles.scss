@@ -1,0 +1,127 @@
+*{
+  margin: 0;
+  padding: 0;
+}
+
+body,
+html {
+    font-size: 0.16rem;
+    height: 100%;
+    width: 100%;
+    font-family: PingFang;
+}
+i, em {
+    font-style:normal;
+}
+
+li{
+    list-style: none;
+}
+#app,
+.app {
+    height: 100%;
+    width: 100%;
+    overflow: hidden;
+}
+body * {
+    box-sizing: border-box;
+}
+
+//滚动条样式
+::-webkit-scrollbar {
+    width: 6px;
+    height: 8px;
+    background-color: transparent;
+    border-radius: 6px;
+}
+
+::-webkit-scrollbar-thumb {
+    background-color: rgba(144, 147, 153, 0.5);
+    border-radius: 6px;
+}
+.modal-class {
+    background: rgba($color: #000000, $alpha: 0.8);
+}
+
+// .cell{
+//     font-size: 0.2rem!important;
+// }
+
+.pagination{
+    display: flex;
+    justify-content: flex-end;
+}
+
+/* style.css 或 App.vue */
+#nprogress .bar {
+    background: linear-gradient(90deg, #00c6ff, #0072ff) !important;
+    height: 3px !important;
+    box-shadow: 0 0 10px rgba(0, 114, 255, 0.5);
+  }
+  
+  #nprogress .peg {
+    box-shadow: 0 0 10px #0072ff, 0 0 5px #0072ff;
+  }
+
+//   html.dark {
+//     /* 自定义深色背景颜色 */
+//     --el-bg-color: rgba(19, 19, 20, 0.74);
+//   }
+
+/* 自定义primary霓虹按钮 */
+.neon-btn {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+    border: none !important;
+    padding: 12px 24px !important;
+    font-size: 16px !important;
+    font-weight: 600 !important;
+    box-shadow: 0 0 20px rgba(102, 126, 234, 0.5) !important;
+    transition: all 0.3s ease !important;
+    position: relative;
+    overflow: hidden;
+  }
+  
+  .neon-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 5px 30px rgba(102, 126, 234, 0.7) !important;
+  }
+  
+  .neon-btn:active {
+    transform: translateY(0);
+  }
+
+  .pagination {
+    margin-top: 10px;
+    justify-content: center;
+  }
+
+
+  /* 自定义对话框样式 */
+.neon-dialog {
+    background: rgba(15, 23, 42, 0.95) !important;
+    border: 1px solid rgba(102, 126, 234, 0.3) !important;
+    border-radius: 20px !important;
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5) !important;
+    .el-input__inner::placeholder {
+      color: #f1f5f9;
+      font-size: 14px;
+    }
+    .el-input__inner {
+      color: white;
+    }
+  }
+  
+.neon-dialog .el-dialog__header {
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    padding: 20px 24px;
+    margin-right: 0;
+  }
+  
+ .neon-dialog .el-dialog__title {
+    color: #f1f5f9;
+    font-weight: 700;
+  }
+  
+.neon-dialog .el-dialog__body {
+    padding: 24px;
+  }

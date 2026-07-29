@@ -1,0 +1,1131 @@
+// @ts-ignore
+import {
+  success,
+  error500,
+  error
+} from "../responseFn"
+import {
+  formatDate,
+  createInsertSql,
+  getUUid,
+  buildMultimodalContent
+} from "../../utils/common"
+import {
+  doc
+} from "../../utils/document";
+import {
+  getDB
+} from "../../utils/getDb";
+import {
+  ModelFactory
+} from '../../model/modelFactory';
+import {
+  writeingPromt
+} from "../../model/prompt";
+import {
+  ElectronTaskManager
+} from "../../task-manager";
+import {
+  createAgent,
+  ToolMessage,
+  SystemMessage
+} from "langchain";
+import { createSearchTool, parseWebPage } from "../../model/tools"
+import { searchProfileWritingSamples } from "../writeStyleServer/profileSampleSearch";
+import path from "path";
+const db = new Proxy({}, { get: (_, prop) => getDB().db[prop] });
+const express = require('express');
+const manager = ElectronTaskManager.getInstance()
+// 初始化：3 个并发 Worker
+const workerPath = path.join(__dirname, 'workers', 'text-worker.js')
+manager.initialize(workerPath, 3)
+const textServer = express.Router();
+const WRITING_MEMORY_RECENT_LIMIT = 10;
+const WRITING_MEMORY_CHAR_LIMIT = 6000;
+const WRITING_MEMORY_SUMMARY_TARGET = 1600;
+// 知识库切分粒度：块太大会稀释embedding语义、检索不准；调小后配合混合检索(searchRags)精度更好
+const KB_CHUNK_SIZE = 600;
+const KB_CHUNK_OVERLAP = 120;
+
+function safeJsonParse(value, fallback) {
+  try {
+    return JSON.parse(value || JSON.stringify(fallback));
+  } catch {
+    return fallback;
+  }
+}
+
+// 把上游模型/接口报错转成用户能看懂的中文提示，未识别的错误类型原样把 message 透出
+function describeAiTextError(err) {
+  const raw = String(err?.message || err || "").trim();
+  if (/DataInspectionFailed|inappropriate content|data_inspection_failed/i.test(raw)) {
+    return "本次写作内容触发了模型的内容安全审核，被拒绝生成，请调整表述后重试。";
+  }
+  if (/429|rate limit/i.test(raw)) {
+    return "模型接口请求过于频繁，请稍后重试。";
+  }
+  if (/401|403|invalid api key|unauthorized/i.test(raw)) {
+    return "模型接口鉴权失败，请检查模型配置里的 API Key 是否正确。";
+  }
+  return raw || "写作生成失败，请稍后重试。";
+}
+
+function buildSamplePreview(content = "", limit = 1200) {
+  const normalized = String(content || "").replace(/\s+/g, " ").trim();
+  if (!normalized) return "";
+  if (normalized.length <= limit) return normalized;
+  return `${normalized.slice(0, limit)}...`;
+}
+
+function normalizeSampleText(content = "") {
+  return String(content || "").replace(/\s+/g, " ").trim();
+}
+
+function normalizeWritingRole(role = "") {
+  return role === "assistant" || role === "ai" ? "assistant" : "user";
+}
+
+function formatWritingMemoryMessages(messages = []) {
+  return messages
+    .map((item) => {
+      const role = normalizeWritingRole(item.role) === "assistant" ? "助手" : "用户";
+      return `${role}：${String(item.content || "").trim()}`;
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function buildMemoryText(compressedMemory = "", recentMessages = []) {
+  const parts = [];
+  if (String(compressedMemory || "").trim()) {
+    parts.push(`压缩历史记忆：\n${String(compressedMemory).trim()}`);
+  }
+  const recentText = formatWritingMemoryMessages(recentMessages);
+  if (recentText) {
+    parts.push(`近期对话记忆：\n${recentText}`);
+  }
+  return parts.join("\n\n").trim();
+}
+
+function getWritingSessionRaw(sessionId) {
+  if (!sessionId) return null;
+  return db.prepare(`SELECT * FROM writing_chat_sessions WHERE sessionId = ?`).get(sessionId);
+}
+
+function ensureWritingSession({ sessionId, profileId, name = "" }) {
+  const now = formatDate(new Date().getTime());
+  const cleanSessionId = String(sessionId || "").trim() || getUUid();
+  const existing = getWritingSessionRaw(cleanSessionId);
+  if (existing) {
+    db.prepare(
+      `UPDATE writing_chat_sessions SET profileId = COALESCE(?, profileId), updatedAt = ? WHERE sessionId = ?`
+    ).run(profileId || existing.profileId || null, now, cleanSessionId);
+    return cleanSessionId;
+  }
+
+  db.prepare(
+    `INSERT INTO writing_chat_sessions(sessionId, profileId, name, compressedMemory, createdAt, updatedAt)
+     VALUES(?,?,?,?,?,?)`
+  ).run(
+    cleanSessionId,
+    profileId || null,
+    name || "新写作会话",
+    "",
+    now,
+    now
+  );
+  return cleanSessionId;
+}
+
+function listWritingMessages(sessionId, limit = 200) {
+  return db
+    .prepare(
+      `SELECT id, sessionId, role, content, files, createdAt
+       FROM writing_chat_messages
+       WHERE sessionId = ?
+       ORDER BY id ASC
+       LIMIT ?`
+    )
+    .all(sessionId, limit);
+}
+
+function listRecentWritingMessages(sessionId, limit = WRITING_MEMORY_RECENT_LIMIT) {
+  return db
+    .prepare(
+      `SELECT id, sessionId, role, content, createdAt
+       FROM writing_chat_messages
+       WHERE sessionId = ?
+       ORDER BY id DESC
+       LIMIT ?`
+    )
+    .all(sessionId, limit)
+    .reverse();
+}
+
+function saveWritingMessage(sessionId, role, content, files = "") {
+  if (!sessionId || !String(content || "").trim()) return;
+  const now = formatDate(new Date().getTime());
+  db.prepare(
+    `INSERT INTO writing_chat_messages(sessionId, role, content, files, createdAt) VALUES(?,?,?,?,?)`
+  ).run(sessionId, normalizeWritingRole(role), content, files, now);
+  db.prepare(`UPDATE writing_chat_sessions SET updatedAt = ? WHERE sessionId = ?`).run(now, sessionId);
+}
+
+function deleteWritingMessagesByIds(ids = []) {
+  if (!ids.length) return;
+  const deleteMany = db.transaction((rows) => {
+    const stmt = db.prepare(`DELETE FROM writing_chat_messages WHERE id = ?`);
+    rows.forEach((id) => stmt.run(id));
+  });
+  deleteMany(ids);
+}
+
+async function summarizeWritingMemory(existingSummary = "", messages = [], targetChars = WRITING_MEMORY_SUMMARY_TARGET) {
+  const historyText = formatWritingMemoryMessages(messages);
+  if (!String(existingSummary || "").trim() && !historyText) return "";
+
+  const prompt = `请把以下 AI 写作对话压缩成长期记忆，用于后续继续写作时保持上下文。
+
+要求：
+1. 保留用户长期偏好、正在写的主题、已确定的事实、约定的口吻、不能忘的修改意见。
+2. 删除寒暄、重复内容、无效失败信息和已经不重要的过程。
+3. 不要编造没有出现过的信息。
+4. 输出中文，控制在 ${targetChars} 字以内。
+
+已有压缩记忆：
+${existingSummary || "无"}
+
+需要合并的较早对话：
+${historyText || "无"}`;
+
+  try {
+    const model = ModelFactory.getChatModel({ isNew: true });
+    const result = await model.invoke([{ role: "user", content: prompt }]);
+    return String(result?.content || result || "").trim().slice(0, targetChars * 2);
+  } catch (err) {
+    console.error("summarizeWritingMemory failed", err);
+    return buildSamplePreview(`${existingSummary}\n${historyText}`, targetChars);
+  }
+}
+
+async function compactWritingMemory(sessionId) {
+  const session = getWritingSessionRaw(sessionId);
+  if (!session) return;
+
+  let compressedMemory = String(session.compressedMemory || "").trim();
+  let messages = listWritingMessages(sessionId, 500);
+
+  if (messages.length > WRITING_MEMORY_RECENT_LIMIT) {
+    const older = messages.slice(0, messages.length - WRITING_MEMORY_RECENT_LIMIT);
+    compressedMemory = await summarizeWritingMemory(compressedMemory, older);
+    deleteWritingMessagesByIds(older.map((item) => item.id));
+    messages = messages.slice(messages.length - WRITING_MEMORY_RECENT_LIMIT);
+  }
+
+  while (messages.length && buildMemoryText(compressedMemory, messages).length > WRITING_MEMORY_CHAR_LIMIT) {
+    const batchSize = Math.min(2, messages.length);
+    const batch = messages.slice(0, batchSize);
+    compressedMemory = await summarizeWritingMemory(compressedMemory, batch);
+    deleteWritingMessagesByIds(batch.map((item) => item.id));
+    messages = messages.slice(batchSize);
+  }
+
+  if (!messages.length && compressedMemory.length > WRITING_MEMORY_CHAR_LIMIT) {
+    compressedMemory = await summarizeWritingMemory("", [
+      { role: "assistant", content: compressedMemory },
+    ], WRITING_MEMORY_SUMMARY_TARGET);
+  }
+
+  db.prepare(
+    `UPDATE writing_chat_sessions SET compressedMemory = ?, updatedAt = ? WHERE sessionId = ?`
+  ).run(compressedMemory, formatDate(new Date().getTime()), sessionId);
+}
+
+async function buildWritingMemoryContext(sessionId) {
+  const session = getWritingSessionRaw(sessionId);
+  if (!session) return "";
+
+  let recentMessages = listRecentWritingMessages(sessionId, WRITING_MEMORY_RECENT_LIMIT);
+  let compressedMemory = String(session.compressedMemory || "").trim();
+
+  if (buildMemoryText(compressedMemory, recentMessages).length > WRITING_MEMORY_CHAR_LIMIT) {
+    await compactWritingMemory(sessionId);
+    const latest = getWritingSessionRaw(sessionId);
+    compressedMemory = String(latest?.compressedMemory || "").trim();
+    recentMessages = listRecentWritingMessages(sessionId, WRITING_MEMORY_RECENT_LIMIT);
+  }
+
+  return buildMemoryText(compressedMemory, recentMessages);
+}
+
+function buildWritingSystemPrompt(themeId) {
+  if (!themeId) return "";
+  const result = db.prepare(`SELECT * FROM articles WHERE id = ?`).get(themeId);
+  if (!result) return "";
+
+  const preferredPhrases = safeJsonParse(result.preferredPhrases, []);
+  const avoidPhrases = safeJsonParse(result.avoidPhrases, []);
+  const styleProfile = safeJsonParse(result.styleProfile, {});
+  const writingSample = buildSamplePreview(result.originalContent);
+
+  return `${writeingPromt}
+
+这是用户的个人写作画像，你要优先模仿这种写作方式。
+写作场景：${result.scene || "未指定"}
+
+用户身份：${result.identity || "未指定"}
+
+用户常用表达：${preferredPhrases.length ? preferredPhrases.join("、") : "无"}
+
+用户应避免表达：
+${avoidPhrases.length ? avoidPhrases.join("、") : "无"}
+
+个人风格画像：${styleProfile.summary || "未指定"}
+
+参考样本摘录：
+${writingSample || result.content || ""}
+
+模仿要求：
+1. 优先模仿用户的语气、用词、节奏、开头和结尾习惯
+2. 可以参考样本的文风，但不要照抄原文
+3. 默认优先使用用户常用表达，避免使用用户不喜欢的说法
+4. 写出来的内容要像用户自己写的，而不是像在描述用户的风格`;
+}
+
+function buildWritingSampleStyleText(item = {}) {
+  if (item.analysisProfile) {
+    const analysis = item.analysisProfile || {};
+    const parts = [];
+    if (analysis.summary) parts.push(`摘要：${buildSamplePreview(analysis.summary, 120)}`);
+    if (analysis.writingTechniques?.length) {
+      parts.push(`写作手法：${analysis.writingTechniques.slice(0, 6).join("、")}`);
+    }
+    if (analysis.writingStyle) {
+      parts.push(`风格：${buildSamplePreview(analysis.writingStyle, 180)}`);
+    }
+    if (analysis.coreIdea) {
+      parts.push(`核心思想：${buildSamplePreview(analysis.coreIdea, 160)}`);
+    }
+    if (parts.length) return parts.join("\n");
+  }
+
+  const text = item.chunkText || item.content || "";
+  return buildSamplePreview(text, 160);
+}
+
+function buildRetrievedWritingSamplesText(samples = []) {
+  if (!samples.length) return "";
+  return samples
+    .map((item, index) => {
+      const title = item.sourceName ? `【${item.sourceName}】` : "";
+      return `${index + 1}. ${title}\n${buildWritingSampleStyleText(item)}`;
+    })
+    .join("\n");
+}
+
+function normalizeSelectedSampleIds(value = []) {
+  const values = Array.isArray(value) ? value : [value];
+  const result = [];
+  const seen = new Set();
+
+  for (const raw of values) {
+    const id = Number(raw);
+    if (!Number.isInteger(id) || id <= 0 || seen.has(id)) continue;
+    seen.add(id);
+    result.push(id);
+    if (result.length >= 2) break;
+  }
+
+  return result;
+}
+
+function listSelectedWritingSamples(profileId, sampleIds = []) {
+  const cleanProfileId = Number(profileId);
+  const cleanIds = normalizeSelectedSampleIds(sampleIds);
+  if (!cleanProfileId || !cleanIds.length) return [];
+
+  const placeholders = cleanIds.map(() => "?").join(",");
+  const rows = db
+    .prepare(
+      `
+      SELECT id, sourceName, content, profileId
+           , analysisProfile
+      FROM writingProfileSamples
+      WHERE profileId = ?
+        AND id IN (${placeholders})
+    `
+    )
+    .all(cleanProfileId, ...cleanIds);
+
+  const byId = new Map(rows.map((item) => [Number(item.id), item]));
+  return cleanIds
+    .map((id) => byId.get(id))
+    .filter(Boolean)
+    .map((item) => ({
+      id: item.id,
+      sourceName: item.sourceName || "写作样本",
+      content: item.content || "",
+      analysisProfile: safeJsonParse(item.analysisProfile, {}),
+    }));
+}
+
+function findSourceSampleForChunk(sampleRows = [], chunkText = "") {
+  const chunk = normalizeSampleText(chunkText);
+  if (!chunk) return null;
+
+  return sampleRows.find((sample) => {
+    const content = normalizeSampleText(sample.content);
+    return content && (content.includes(chunk) || chunk.includes(content));
+  }) || null;
+}
+
+function enrichRetrievedWritingSamplesWithAnalysis(profileId, retrievedSamples = []) {
+  const cleanProfileId = Number(profileId);
+  if (!cleanProfileId || !retrievedSamples.length) return retrievedSamples;
+
+  const sampleRows = db
+    .prepare(
+      `
+      SELECT id, sourceName, content, analysisProfile
+      FROM writingProfileSamples
+      WHERE profileId = ?
+      ORDER BY createTime DESC, id DESC
+    `
+    )
+    .all(cleanProfileId);
+  if (!sampleRows.length) return retrievedSamples;
+
+  const seenSampleIds = new Set();
+  const enriched = [];
+
+  for (const item of retrievedSamples) {
+    const sourceSample = findSourceSampleForChunk(sampleRows, item.chunkText);
+    if (!sourceSample) {
+      enriched.push(item);
+      continue;
+    }
+    if (seenSampleIds.has(sourceSample.id)) continue;
+    seenSampleIds.add(sourceSample.id);
+    enriched.push({
+      ...item,
+      sampleId: sourceSample.id,
+      sourceName: sourceSample.sourceName || "写作样本",
+      content: sourceSample.content || "",
+      analysisProfile: safeJsonParse(sourceSample.analysisProfile, {}),
+    });
+  }
+
+  return enriched.length ? enriched : retrievedSamples;
+}
+
+async function buildWritingSystemPromptV2(themeId, userPrompt = "", options = {}) {
+  if (!themeId) return options.returnContext ? { systemPrompt: "", retrievedSamples: [] } : "";
+  const result = db.prepare(`SELECT * FROM articles WHERE id = ?`).get(themeId);
+  if (!result) return options.returnContext ? { systemPrompt: "", retrievedSamples: [] } : "";
+
+  const preferredPhrases = safeJsonParse(result.preferredPhrases, []);
+  const avoidPhrases = safeJsonParse(result.avoidPhrases, []);
+  const styleProfile = safeJsonParse(result.styleProfile, {});
+  let retrievedSamples = [];
+  const selectedSamples = Array.isArray(options.selectedSamples) ? options.selectedSamples : [];
+  const sampleSectionTitle = selectedSamples.length ? "用户指定风格样本" : "相似风格样本片段";
+
+  if (selectedSamples.length) {
+    retrievedSamples = selectedSamples;
+  } else if (options.includeSamples !== false) {
+    try {
+      retrievedSamples = await searchProfileWritingSamples({
+        profileId: themeId,
+        query: userPrompt,
+        topK: 4,
+        minScore: 0.6,
+        fallbackContent: result.originalContent,
+        profileContext: {
+          title: result.title,
+          scene: result.scene,
+          identity: result.identity,
+          preferredPhrases,
+          avoidPhrases,
+        },
+      });
+      retrievedSamples = enrichRetrievedWritingSamplesWithAnalysis(themeId, retrievedSamples);
+    } catch (error) {
+      console.error("buildWritingSystemPromptV2 search failed", error);
+    }
+  }
+  const writingSample = buildRetrievedWritingSamplesText(retrievedSamples);
+
+  const systemPrompt = `${writeingPromt}
+
+用户本次写作需求会作为 user message 传入，必须优先满足。
+
+写作画像：
+- 场景：${result.scene || "未指定"}
+- 身份：${result.identity || "未指定"}
+- 总画像：${styleProfile.summary || "未指定"}
+- 常用表达：${preferredPhrases.length ? preferredPhrases.join("、") : "无"}
+- 避免表达：${avoidPhrases.length ? avoidPhrases.join("、") : "无"}
+
+${sampleSectionTitle}：
+${writingSample || "无"}
+
+执行要求：
+1. 写得像用户本人：贴近语气、节奏、用词和收束方式。
+2. 上方样本只用于学习写作风格，包括语气、句式、段落节奏、结构推进、开头和结尾方式。
+3. 不要继承、复述或改写样本里的具体事实、主题、人物、事件、数据和观点；内容必须以用户本次需求为准。
+4. 不要照抄样本文字，不要解释画像，不要说明模仿过程，直接输出成稿。`;
+
+  if (options.returnContext) {
+    return {
+      systemPrompt,
+      retrievedSamples,
+      profileTitle: result.title || "",
+    };
+  }
+
+  return systemPrompt;
+}
+
+textServer.post('/add', (req, res) => {
+  const {
+    name
+  } = req.body;
+  if (!name) {
+    res.send(error500('name不能为空'));
+  }
+  let stmt = db.prepare(` INSERT INTO textType (labelType, createTime) VALUES (?, ?)`);
+  const result = stmt.run(name, formatDate(new Date().getTime()));
+  res.send(success({
+    id: result.lastInsertRowid
+  }))
+});
+
+textServer.get('/writingChat/sessions', (req, res) => {
+  const { profileId } = req.query;
+  if (!profileId) {
+    res.send(success([]));
+    return;
+  }
+
+  const result = db.prepare(`
+    SELECT
+      s.sessionId,
+      s.profileId,
+      s.name,
+      s.compressedMemory,
+      s.createdAt,
+      s.updatedAt,
+      (
+        SELECT content
+        FROM writing_chat_messages m
+        WHERE m.sessionId = s.sessionId
+          AND m.role = 'user'
+        ORDER BY m.id DESC
+        LIMIT 1
+      ) AS preview
+    FROM writing_chat_sessions s
+    WHERE s.profileId = ?
+    ORDER BY s.updatedAt DESC
+  `).all(profileId);
+
+  res.send(success(result));
+});
+
+textServer.post('/writingChat/sessions', (req, res) => {
+  const { profileId, name } = req.body;
+  const sessionId = ensureWritingSession({
+    profileId,
+    name: name || "新写作会话",
+  });
+  res.send(success({ sessionId }));
+});
+
+textServer.get('/writingChat/sessions/:sessionId/messages', (req, res) => {
+  const { sessionId } = req.params;
+  const result = listWritingMessages(sessionId, 200).map((item) => ({
+    ...item,
+    role: item.role === "assistant" ? "ai" : "user",
+  }));
+  res.send(success(result));
+});
+
+textServer.delete('/writingChat/sessions/:sessionId', (req, res) => {
+  const { sessionId } = req.params;
+  const removeSession = db.transaction((id) => {
+    db.prepare(`DELETE FROM writing_chat_messages WHERE sessionId = ?`).run(id);
+    db.prepare(`DELETE FROM writing_chat_sessions WHERE sessionId = ?`).run(id);
+  });
+  removeSession(sessionId);
+  res.send(success());
+});
+
+textServer.post('/writingFeedback', (req, res) => {
+  const {
+    profileId,
+    sessionId = "",
+    userPrompt = "",
+    aiDraft = "",
+    userFeedback = "",
+    revisedDraft = "",
+    score,
+    accepted = false,
+  } = req.body || {};
+
+  const numericScore = Number(score);
+  if (!profileId) {
+    res.send(error500("profileId不能为空"));
+    return;
+  }
+  if (!Number.isInteger(numericScore) || numericScore < 1 || numericScore > 10) {
+    res.send(error500("评分必须是1到10分"));
+    return;
+  }
+  if (!String(aiDraft || "").trim()) {
+    res.send(error500("反馈内容不能为空"));
+    return;
+  }
+
+  const duplicate = db.prepare(`
+    SELECT id
+    FROM writing_feedback_pool
+    WHERE profileId = ?
+      AND IFNULL(sessionId, '') = ?
+      AND IFNULL(userPrompt, '') = ?
+      AND IFNULL(aiDraft, '') = ?
+      AND IFNULL(userFeedback, '') = ?
+      AND score = ?
+    ORDER BY id DESC
+    LIMIT 1
+  `).get(
+    profileId,
+    String(sessionId || ""),
+    String(userPrompt || ""),
+    String(aiDraft || ""),
+    String(userFeedback || ""),
+    numericScore
+  );
+
+  if (duplicate?.id) {
+    res.send(success({ id: duplicate.id, duplicated: true }, "反馈已保存"));
+    return;
+  }
+
+  const now = formatDate(new Date().getTime());
+  const result = db.prepare(`
+    INSERT INTO writing_feedback_pool(
+      profileId,
+      sessionId,
+      userPrompt,
+      aiDraft,
+      userFeedback,
+      revisedDraft,
+      score,
+      accepted,
+      status,
+      createTime,
+      updateTime
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+  `).run(
+    profileId,
+    sessionId,
+    userPrompt,
+    aiDraft,
+    userFeedback,
+    revisedDraft,
+    numericScore,
+    accepted ? 1 : 0,
+    "pending_profile_review",
+    now,
+    now
+  );
+
+  res.send(success({ id: result.lastInsertRowid }));
+});
+
+textServer.post('/aiText',async (req, res) => {
+  const {
+    prompt,
+    themeId,
+    sessionId,
+    streamEvents = false,
+    selectedSampleIds = [],
+    uploadedDocs = []
+  } =  req.body;
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  const llm = ModelFactory.getChatModel();
+  const imagePaths = uploadedDocs.filter(d => d.type === 'image').map(d => d.filePath);
+  // 每个请求单独创建联网搜索工具：闭包内限制最多 5 次调用、连续失败 3 次后停止，避免模型反复换词重试
+  const webTools = [createSearchTool(5, 3), parseWebPage];
+  let str = "";
+  let tool = "";
+  const toolsMap = { webSearch: "联网搜索", parseWebPage: "解析网页" };
+  const runIdToolMap = new Map(); // runId → toolName，用于 handleToolEnd 反查
+
+  // 客户端中断（点击"停止"或断开连接）时，真正取消后端的模型调用，而不是只让前端停止读取
+  const backendAbort = new AbortController();
+  let responseEnded = false;
+  res.on("close", () => {
+    if (!responseEnded) backendAbort.abort();
+  });
+
+  const writeEvent = (event) => {
+    if (backendAbort.signal.aborted || res.writableEnded) return;
+    try { res.write(`data: ${JSON.stringify(event)}\n\n`); } catch {}
+  };
+  const writeContent = (content) => {
+    if (backendAbort.signal.aborted || res.writableEnded) return;
+    if (streamEvents) {
+      writeEvent({ type: "content", content });
+    } else {
+      try { res.write(`data: ${content}\n\n`); } catch {}
+    }
+  };
+  let persisted = false;
+  const persistWritingTurn = async () => {
+    if (persisted) return;
+    persisted = true;
+    if (writingSessionId && String(prompt || "").trim()) {
+      try {
+        saveWritingMessage(writingSessionId, "user", prompt, uploadedDocs.map(d => d.filePath).join(","));
+        saveWritingMessage(writingSessionId, "assistant", str || "（已停止生成）");
+        await compactWritingMemory(writingSessionId);
+      } catch (err) {
+        console.error("save writing memory failed", err);
+      }
+    }
+  };
+
+  const writingSessionId = sessionId
+    ? ensureWritingSession({ sessionId, profileId: themeId, name: "写作会话" })
+    : "";
+  const writingSession = writingSessionId ? getWritingSessionRaw(writingSessionId) : null;
+  const selectedWritingSamples = themeId
+    ? listSelectedWritingSamples(themeId, selectedSampleIds)
+    : [];
+  const hasSelectedSampleIds = normalizeSelectedSampleIds(selectedSampleIds).length > 0;
+  const hasSelectedWritingSamples = selectedWritingSamples.length > 0;
+  const hasWritingSessionHistory = Boolean(String(writingSession?.compressedMemory || "").trim()) ||
+    (writingSessionId ? listWritingMessages(writingSessionId, 1).length > 0 : false);
+  const shouldRetrieveWritingSamples = hasSelectedSampleIds
+    ? false
+    : writingSessionId
+    ? !hasWritingSessionHistory
+    : Boolean(themeId);
+
+  if (streamEvents && writingSessionId) {
+    writeEvent({
+      type: "tool_start",
+      toolName: "writingMemory",
+      displayName: "读取写作记忆",
+    });
+  }
+
+  const writingMemory = writingSessionId ? await buildWritingMemoryContext(writingSessionId) : "";
+
+  if (streamEvents && writingSessionId) {
+    if (writingMemory) {
+      writeEvent({
+        type: "tool_result",
+        toolName: "writingMemory",
+        results: [{
+          index: 1,
+          source: "写作会话记忆",
+          content: buildSamplePreview(writingMemory, 180),
+        }],
+      });
+    }
+    writeEvent({
+      type: "tool_done",
+      toolName: "writingMemory",
+    });
+  }
+
+  if (streamEvents && themeId && (hasSelectedWritingSamples || shouldRetrieveWritingSamples)) {
+    writeEvent({
+      type: "tool_start",
+      toolName: "writingProfile",
+      displayName: hasSelectedWritingSamples ? "读取用户指定风格样本" : "读取写作画像与相似风格样本",
+    });
+  }
+
+  const promptContext = await buildWritingSystemPromptV2(themeId, prompt, {
+    returnContext: Boolean(streamEvents),
+    includeSamples: shouldRetrieveWritingSamples,
+    selectedSamples: selectedWritingSamples,
+  });
+  const systemPrompt = streamEvents ? promptContext.systemPrompt : promptContext;
+
+  if (streamEvents && themeId && (hasSelectedWritingSamples || shouldRetrieveWritingSamples)) {
+    const results = (promptContext.retrievedSamples || []).map((item, index) => ({
+      index: index + 1,
+      source: hasSelectedWritingSamples ? (item.sourceName || "用户指定风格样本") : "相似风格样本",
+      content: buildSamplePreview(buildWritingSampleStyleText(item), 220),
+      similarity: item.score != null ? Math.round(Number(item.score) * 100) : undefined,
+    }));
+    writeEvent({
+      type: "tool_result",
+      toolName: "writingProfile",
+      results,
+    });
+    writeEvent({
+      type: "tool_done",
+      toolName: "writingProfile",
+    });
+  }
+  let messages = [];
+  if (systemPrompt) {
+    messages.push({ role: "system", content: systemPrompt });
+  }
+  if (writingMemory) {
+    messages.push({
+      role: "system",
+      content: `以下是本写作会话的持久记忆。它只用于补充上下文；如果和用户本次输入冲突，优先服从用户本次输入。\n\n${writingMemory}`,
+    });
+  }
+  // 单独作为一条消息、紧挨在用户输入前面，而不是塞进大段系统提示词里，避免被前面的画像/样本内容淹没
+  messages.push({
+    role: "system",
+    content: `当前北京时间：${formatDate(new Date().getTime())}`,
+  });
+  messages.push({ role: "user", content: buildMultimodalContent(prompt, imagePaths) });
+  console.log(systemPrompt,"===");
+  
+  const agent = createAgent({ model: llm, tools: webTools });
+  let stream;
+  try {
+    stream = await agent.stream({ messages }, {
+      streamMode: "messages",
+      signal: backendAbort.signal,
+      callbacks: [{
+        // 工具开始调用：让前端展示对应步骤的 loading 状态
+        handleToolStart: (toolDef, input, runId, parentRunId, tags, metadata, name) => {
+          const toolName = name || "";
+          if (runId) runIdToolMap.set(runId, toolName);
+          if (streamEvents) {
+            writeEvent({
+              type: "tool_start",
+              toolName,
+              displayName: toolsMap[toolName] || toolName || "执行工具",
+            });
+          }
+        },
+        handleToolEnd: (output, runId) => {
+          const toolName = runIdToolMap.get(runId) || "";
+          runIdToolMap.delete(runId);
+          if (streamEvents) {
+            writeEvent({ type: "tool_done", toolName });
+          }
+        },
+      }],
+    });
+  } catch (err) {
+    if (err.name === "AbortError" || backendAbort.signal.aborted) {
+      responseEnded = true;
+      await persistWritingTurn();
+      res.end();
+      return;
+    }
+    console.error("aiText agent.stream failed", err);
+    const friendlyMsg = describeAiTextError(err);
+    if (streamEvents) {
+      writeEvent({ type: "error", error: friendlyMsg });
+    } else {
+      writeContent(`[写作失败：${friendlyMsg}]`);
+    }
+    res.end();
+    return;
+  }
+
+  try {
+    for await (const chunk of stream) {
+      const message = chunk[0];
+      if (message instanceof ToolMessage) {
+        const toolName = message.name;
+        if (!tool.includes(toolsMap[toolName] || toolName)) {
+          tool += (toolsMap[toolName] || toolName) + ";";
+        }
+        if (streamEvents) {
+          try {
+            const parsed = typeof message.content === "string" ? JSON.parse(message.content) : message.content;
+            if (toolName === "webSearch" && parsed?.results?.length) {
+              writeEvent({ type: "tool_result", toolName: "webSearch", results: parsed.results });
+            } else if (toolName === "parseWebPage" && parsed?.success) {
+              writeEvent({
+                type: "tool_result",
+                toolName: "parseWebPage",
+                parseResult: { title: parsed.title, url: parsed.url, markdown: parsed.markdown },
+              });
+            }
+          } catch (e) {
+            // 工具结果解析失败时不展示细节，不影响正文继续生成
+          }
+        }
+        continue;
+      }
+      if (message?.content) {
+        str += message.content;
+        writeContent(message.content);
+      }
+    }
+  } catch (err) {
+    // agent 在流式生成过程中报错（比如上游模型内容审核拦截，或客户端中断触发的 AbortError）：
+    // 这里必须捕获并通知前端，否则会变成未处理的 Promise rejection，前端的连接永远收不到结束信号，一直卡在"写作中"
+    if (!(err.name === "AbortError" || backendAbort.signal.aborted)) {
+      console.error("aiText stream failed", err);
+      const friendlyMsg = describeAiTextError(err);
+      if (streamEvents) {
+        writeEvent({ type: "error", error: friendlyMsg });
+      } else {
+        writeContent(`\n\n[写作失败：${friendlyMsg}]`);
+      }
+    }
+  }
+
+  responseEnded = true;
+  // 无论正常结束还是中途中断，都把已生成的部分内容落库，避免刷新/重进会话后记录丢失
+  await persistWritingTurn();
+  res.end();
+})
+textServer.get('/del', (req, res) => {
+  const {
+    id
+  } = req.query;
+  if (!id) {
+    res.send(error500('id不能为空'));
+  }
+  let stmt = db.prepare(` DELETE FROM textType WHERE id = ?`);
+  const result = stmt.run(id);
+  res.send(success({
+    id: result.lastInsertRowid
+  }))
+})
+textServer.get('/list', (req, res) => {
+  const {
+    keyWord = ""
+  } = req.query;
+  let stmt = db.prepare(` SELECT * FROM textType WHERE labelType LIKE '%${keyWord}%' ORDER BY createTime DESC`);
+  const result = stmt.all();
+  res.send(success(result))
+})
+textServer.get('/delText', (req, res) => {
+  const {
+    id
+  } = req.query;
+  if (!id) {
+    res.send(error500('id不能为空'));
+  }
+  const transaction = db.transaction(() => {
+    // 1. 删除子表中的文本记录
+    db.prepare('DELETE FROM texts WHERE id = ?').run(id);
+
+    // 2. 删除主表中的向量记录
+    db.prepare('DELETE FROM embdingTable WHERE relateId = ?').run(id);
+  });
+  try {
+    // 执行事务
+    transaction();
+    res.send(success())
+  } catch (error) {
+    console.error('删除失败', error);
+    // 如果有错误，事务会自动回滚
+    res.send(error500())
+  }
+
+})
+textServer.put('/textDetail/:id', (req, res) => {
+  const { id } = req.params;
+  const updates = req.body;
+  // 不允许更新 id 字段
+  delete updates.id;
+  // 获取所有允许更新的字段
+  const allowedFields = ['content', 'title', 'typeId', 'isRag', 'isUpload', 'status','markdownContent'];
+  // 过滤出实际需要更新的字段
+  const fieldsToUpdate = Object.keys(updates).filter(key => 
+    allowedFields.includes(key) && updates[key] !== undefined
+  );
+  // 如果没有有效字段需要更新
+  if (fieldsToUpdate.length === 0) {
+    return res.send(error('没有提供需要更新的字段'));
+  }
+  // 构建动态 SQL
+  const setClause = fieldsToUpdate.map(field => `${field} = ?`).join(', ');
+  const values = fieldsToUpdate.map(field => updates[field]);
+  values.push(id); // 添加 id 作为 WHERE 条件
+  let stl = db.prepare(`SELECT * FROM texts WHERE id = ?`);
+  const detail = stl.get(id);
+  // 如果内容变化了，需要删除之前的向量内容并重新向量化
+  if((updates.markdownContent&&detail.markdownContent!==updates.markdownContent)&&detail.isRag==1){
+    db.prepare('DELETE FROM embdingTable WHERE relateId = ?').run(id);
+    let docObj = new doc({
+      chunkSize: KB_CHUNK_SIZE,
+      chunkOverlap: KB_CHUNK_OVERLAP
+    });
+    handelText(updates.markdownContent,id,docObj)
+  }
+  // 如果从非向量化切换为需要向量化
+  if((updates.isRag&&updates.isRag==1)&&detail.isRag==2){
+    if(detail.markdownContent){
+      db.prepare('DELETE FROM embdingTable WHERE relateId = ?').run(id);
+      let docObj = new doc({
+        chunkSize: KB_CHUNK_SIZE,
+        chunkOverlap: KB_CHUNK_OVERLAP
+      });
+      handelText(detail.markdownContent,id,docObj)
+    }
+  }
+  // 如果取消这篇文章的向量化
+  if((updates.isRag&&updates.isRag==2)&&detail.isRag==1){
+    console.log("取消向量化",id)
+    db.prepare('DELETE FROM embdingTable WHERE relateId = ?').run(id);
+  }
+  const sql = `UPDATE texts SET ${setClause} WHERE id = ?`;
+  try {
+    let stmt = db.prepare(sql);
+    const result = stmt.run(...values);
+    if (result.changes === 0) {
+      return res.send(error('未找到该记录或无需更新'));
+    }
+    res.send(success('更新成功'));
+  } catch (err) {
+    res.send(error('更新失败: ' + err.message));
+  }
+});
+textServer.get('/textDetail/:id',(req,res)=>{
+  const {id} = req.params;
+  let stmt = db.prepare(` SELECT * FROM texts WHERE id = ?`);
+  const result = stmt.get(id);
+  res.send(success(result))
+})
+textServer.post('/saveText', async (req, res) => {
+  const {
+    filePaths,
+    isRag = 1,
+    typeId = "",
+    title = "",
+    isUpload = 1,
+  } = req.body;
+  // 文件上传方式处理
+  if (isUpload == 1) {
+    if (!filePaths || filePaths.length == 0) {
+      res.send(error500('filePaths不能为空'));
+    }
+    let dd = await Promise.all(filePaths.map(async path => {
+      return new Promise(async (resolve, reject) => {
+        try {
+          let docObj = new doc({
+            docPath: path.filePath,
+            chunkSize: KB_CHUNK_SIZE,
+            chunkOverlap: KB_CHUNK_OVERLAP
+          });
+          let text = await docObj.loader.load();
+          let str = ""
+          text.forEach(t => {
+            str += t.pageContent
+          })
+          let stmt = db.prepare(`INSERT INTO texts(fileName,title,content,size,docType,docPath,typeId,isRag,isUpload,status,createTime) values(?,?,?,?,?,?,?,?,?,?,?)`);
+          const result = stmt.run(path.fileName,title, str, path.sizeFormatted, docObj.docType, path.filePath, typeId, isRag ,isUpload, 0, formatDate(new Date().getTime()));
+          if (isRag==1 && (result.lastInsertRowid !== null || result.lastInsertRowid !== undefined)) {
+            // const workresult = manager.addTask({path,str,id:result.lastInsertRowid});
+            // console.log(`添加任务: ${workresult.id} - ${workresult.status}`)
+            // await new Promise(r => setTimeout(r, 200)) // 稍微错开添加时间
+            handelText(str, result.lastInsertRowid, docObj)
+          }
+          resolve({
+            msd: "成功"
+          })
+        } catch (error) {
+          reject(error)
+        }
+
+      })
+    }))
+    let issucess = true;
+    dd.forEach(d => {
+      if (!d.msd) {
+        issucess = false
+      }
+    })
+    if (!issucess) {
+      res.send(error500('失败'))
+    } else {
+      res.send(success(dd))
+    }
+  }else{
+    let stmt = db.prepare(`INSERT INTO texts(title,content,docType,typeId,isRag,isUpload,status,createTime) values(?,?,?,?,?,?,?,?)`);
+    let status = 0;
+    if(isRag==2){
+      status =1
+    }
+    const result = stmt.run(title, "","自定义",typeId, isRag ,isUpload, status, formatDate(new Date().getTime()));
+    res.send(success(result))
+  }
+})
+async function handelText(text, id, docObj) {
+  let updateStmt = db.prepare(`UPDATE texts SET process = ?,status=? WHERE id = ?`);
+  try {
+    if (text && id) {
+      let embdingModel = ModelFactory.getEmbeddingModel();
+      const vectorDb = getDB();
+      updateStmt.run(10, 2, id);
+      let texts = await docObj.textSplitter.splitText(text);
+      updateStmt.run(50, 2, id);
+      let vectors = await embdingModel.embedDocuments(texts);
+      updateStmt.run(60, 2, id);
+      for (let i = 0; i < vectors.length; i++) {
+        vectorDb.insert(vectors[i], texts[i], id)
+      }
+      vectorDb.quantize();
+      updateStmt.run(100, 1, id);
+    }
+  } catch (error) {
+    console.error('向量化失败', error);
+    updateStmt.run(0, 0, id);
+  }
+}
+textServer.get('/textList', (req, res) => {
+  const {
+      keyWord = "",
+      page = 1,
+      pageSize = 10,
+      typeId = null
+  } = req.query;
+  const pageNum = Math.max(1, Number(page));
+  const sizeNum = Math.max(1, Number(pageSize));
+  const offset = (pageNum - 1) * sizeNum;
+  let sql = `SELECT * FROM texts 
+  WHERE title LIKE ? 
+  ${typeId ? 'AND typeId = ?' : ''}
+  ORDER BY createTime DESC 
+  LIMIT ? OFFSET ?`
+  const params = [`%${keyWord}%`];
+  const totalPrams = [`%${keyWord}%`];
+  if (typeId) {
+    params.push(typeId);
+    totalPrams.push(typeId);
+  }
+  params.push(sizeNum, offset);
+  let stmt = db.prepare(sql);
+  const list = stmt.all(...params);
+  let totalSql = `SELECT COUNT(*) AS total FROM texts WHERE title LIKE ? ${typeId ? 'AND typeId = ?' : ''}`
+
+  const totalsmt = db.prepare(totalSql);
+  const {
+    total
+  } = totalsmt.get(...totalPrams);
+  res.send(success({
+    list,
+    page: pageNum,
+    pageSize: sizeNum,
+    total
+  }))
+})
+export default textServer
+
+void createInsertSql;
+void createAgent;
+void ToolMessage;
+void SystemMessage;

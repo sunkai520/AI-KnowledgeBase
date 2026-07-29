@@ -1,0 +1,19 @@
+//靶机命令
+export let getTargetState = " 03 00 00 55 AA"; // 首次获取靶机状态
+export let setTargetLightParams = " 54 55 55 "; // 靶机照明参数设置
+export let lightingMode = " 58 55 55 "; // 靶机照明模式选择
+export let setRangeEnvironment = "01 51 55 55 "; // 设置靶场环境
+export let shootingContent = "01 52 55 55 "; // 射击内容设置
+export let setTargetOperationParams = " 56 55 55 "; // 靶机内部运行参数设置
+export let changeTargetAddress = " C1 55 55 "; // 靶机地址更改
+export let setTargetAddress = "A8 55 55 55 "; // 靶机地址设置
+export let setTargetAction = " 53 55 55 "; // 靶机动作参数设置
+export let targetShutdown = "01 A9 55 55"; // 靶机关机命令
+export let targetStartUp = "01 AA 55 55"; // 靶机开机命令
+export let targetActionType = " 57 55 55 "; // 靶机动作模式确认
+export let targetShow = " A1 55 55"; // 标靶显
+export let targetHidden = " A2 55 55"; // 标靶隐
+export let targetOperatingMode = " 57 55 55"; // 靶机动作模式选择
+export let targetActionStop = " A5 55 55"; // 自动模式  靶机动作暂停命令
+export let targetActionStart = " A6 55 55"; // 自动模式  靶机动作开始命令
+export let setTargetActionParams = " 5B 55 55 "; // 靶机动作及参数合并设置命令
