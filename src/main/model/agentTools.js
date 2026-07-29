@@ -98,6 +98,59 @@ export function updateSkillContent(name, content) {
   return { name, skillDir };
 }
 
+// 归一化：去掉大小写/连字符等差异，只保留字母数字，用于粗粒度判断"是不是同一个 Skill 换了个名字"
+function normalizeSkillKey(s) {
+  return String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+// 编辑距离（输入都是很短的 skill 名/显示名，暴力 DP 足够，不需要引入额外依赖）
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j - 1], dp[i - 1][j], dp[i][j - 1]);
+    }
+  }
+  return dp[m][n];
+}
+
+// 沉淀新 Skill 前的去重：只在已有的非内置 Skill 里找疑似重复项——内置 Skill 是标准参照，
+// 不参与去重合并（避免"沉淀"把内置 Skill 当成合并目标）。命中条件：目录名/显示名归一化后
+// 完全一致、互为子串，或编辑距离很近。
+export function findSimilarNonBuiltinSkill({ name, description }) {
+  const skillsDir = getSystemPath("skills");
+  if (!fs.existsSync(skillsDir)) return null;
+  const targetKey = normalizeSkillKey(name);
+  if (!targetKey) return null;
+
+  const entries = fs.readdirSync(skillsDir, { withFileTypes: true }).filter((e) => e.isDirectory());
+  for (const entry of entries) {
+    if (entry.name === name) continue; // 完全同名会被 writeSkillMd 的存在性检查单独拦下，不算这里的"相似"
+    const skillDir = path.join(skillsDir, entry.name);
+    const { mdPath } = resolveSkillMdPath(skillDir);
+    if (!mdPath) continue;
+    const content = fs.readFileSync(mdPath, "utf-8");
+    const parsed = parseSkillMd(content);
+    if (parsed.isBuiltin) continue; // 内置 Skill 不参与去重比较
+
+    const candidateKeys = [normalizeSkillKey(entry.name), normalizeSkillKey(parsed.displayName)].filter(Boolean);
+    const isSimilarName = candidateKeys.some((key) => {
+      if (key === targetKey) return true;
+      if (key.length >= 4 && targetKey.length >= 4 && (key.includes(targetKey) || targetKey.includes(key))) return true;
+      return levenshtein(key, targetKey) <= 2;
+    });
+    if (isSimilarName) {
+      return { name: entry.name, displayName: parsed.displayName || entry.name, description: parsed.description, content };
+    }
+  }
+  return null;
+}
+
 // 校验并写入 Skill 目录下的配套文件（scripts/references/assets）。
 // 逐个文件独立校验，某个文件不合规不影响其它文件写入，结果里逐条注明成功/失败原因。
 function writeSkillSupportingFiles(skillDir, files) {
@@ -150,7 +203,7 @@ function summarizeSkillFileResults(results) {
   return parts.length ? "\n" + parts.join("\n") : "";
 }
 
-// create_skill / update_skill 共用的配套文件 schema
+// create_skill 的配套文件 schema
 const skillFilesSchema = z
   .array(
     z.object({
@@ -184,8 +237,9 @@ export function createAgentManagementTools({ invalidateAgent, onSkillPersisted }
     {
       name: "create_skill",
       description:
-        "当你在完成任务的过程中总结出一套值得复用的操作步骤/知识、且现有 Skill 里都没有覆盖时调用，把它保存为新 Skill，方便以后同类任务直接复用。" +
-        "注意：如果这次任务本来就用到了（读取过）某个已有 Skill，应该优先用 update_skill 把新发现整合进那个已有 Skill，不要建一个内容重叠的新 Skill。" +
+        "当你想把这次任务里总结出的、值得复用的操作步骤/知识沉淀下来时调用，把它保存为新 Skill。" +
+        "不需要自己判断是否和已有 Skill 重复——哪怕这次任务读取过某个相关的已有 Skill，也照常调用这个工具就行；" +
+        "如果系统检测到和已有 Skill 相似，会交给用户决定是合并还是仍然新建，不需要你做任何额外操作。" +
         "SKILL.md 正文只写导航性摘要和调用方法；可复用的命令片段/长脚本、篇幅较长的参考资料、模板类文件，应该通过 files 参数分别拆到 scripts/、references/、assets/ 子目录，不要都堆进 SKILL.md 正文。",
       schema: z.object({
         name: z.string().describe("skill 目录名，仅小写字母/数字/连字符"),
@@ -197,36 +251,7 @@ export function createAgentManagementTools({ invalidateAgent, onSkillPersisted }
     }
   );
 
-  const update_skill = tool(
-    async ({ name, content, files }, config) => {
-      const skillDir = path.join(getSystemPath("skills"), name);
-      if (!fs.existsSync(skillDir)) throw new Error("Skill 目录不存在");
-      if (content && content.trim()) {
-        updateSkillContent(name, content);
-      }
-      const fileResults = writeSkillSupportingFiles(skillDir, files);
-      invalidateAgent();
-      onSkillPersisted?.({
-        runId: config?.configurable?.run_id,
-        skillName: name,
-        skillAction: "update",
-      });
-      return `已更新 Skill「${name}」，将在下一轮对话中生效。${summarizeSkillFileResults(fileResults)}`;
-    },
-    {
-      name: "update_skill",
-      description:
-        "当你发现某个已有 Skill（尤其是你自己之前创建的）描述不准确、步骤需要修正、或想给它补充/更新配套文件（脚本、参考资料、模板）时调用。" +
-        "content 用于整体覆盖 SKILL.md 正文，只想新增/修改配套文件而不改正文时可以不传 content。",
-      schema: z.object({
-        name: z.string().describe("要更新的 skill 目录名"),
-        content: z.string().optional().describe("新的完整 SKILL.md 内容（含 frontmatter）；不改正文时可省略"),
-        files: skillFilesSchema,
-      }),
-    }
-  );
-
-  return { create_skill, update_skill };
+  return { create_skill };
 }
 
 // ─── 命令执行（弱隔离：限定在会话工作目录内，禁止越权路径）───────────────────

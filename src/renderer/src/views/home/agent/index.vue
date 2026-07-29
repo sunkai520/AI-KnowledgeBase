@@ -260,6 +260,11 @@
             <el-button size="small" :disabled="sending" @click="resumeChat('switch_method')">换个方式</el-button>
             <el-button type="primary" size="small" :disabled="sending" @click="resumeChat('continue')">已处理，继续</el-button>
           </template>
+          <template v-else-if="interruptedMessage.interruptDedup">
+            <el-button size="small" :disabled="sending" @click="resumeChat('reject')">取消</el-button>
+            <el-button size="small" :disabled="sending" @click="mergeSkill()">合并</el-button>
+            <el-button type="primary" size="small" :disabled="sending" @click="resumeChat('approve')">直接创建</el-button>
+          </template>
           <template v-else>
             <el-button size="small" :disabled="sending" @click="resumeChat('reject')">拒绝</el-button>
             <el-button type="primary" size="small" :disabled="sending" @click="resumeChat('approve')">同意执行</el-button>
@@ -292,7 +297,6 @@ const TOOL_NAMES = {
   execute:          '执行命令',
   run_command:      '执行命令',
   create_skill:     '创建Skill',
-  update_skill:     '更新Skill',
   list_workdir:     '浏览工作目录',
   read_workdir_file:'读取工作目录文件',
   task:             '委托子Agent处理',
@@ -643,15 +647,30 @@ function handleStreamEvent(data) {
         };
       } else {
         const req = value?.actionRequests?.[0];
+        const dedup = value?.dedupMatch || null;
+        let content;
+        if (dedup) {
+          content = `检测到与已有 Skill「${dedup.targetDisplayName || dedup.targetName}」相似，为避免创建重复 Skill，请选择处理方式：\n\n` +
+            `**新内容用途**：${dedup.proposedDescription || req?.description || "（未填写）"}\n` +
+            `**已有 Skill 用途**：${dedup.targetDescription || "（未填写）"}`;
+        } else if (req) {
+          // create_skill 的正文预览，方便确认前先看一眼实际要写入的内容
+          const previewSource = req.name === "create_skill" ? req.args?.content : null;
+          const preview = previewSource
+            ? `\n\n--- 内容预览 ---\n${String(previewSource).slice(0, 800)}${previewSource.length > 800 ? "\n...(已截断)" : ""}`
+            : "";
+          content = `需要执行：**${req.name}**\n\n${req.description || ""}${preview}`;
+        } else {
+          content = "需要您的确认才能继续执行";
+        }
         messages.value[idx] = {
           ...messages.value[idx],
           thinking: false,
-          content: req
-            ? `需要执行：**${req.name}**\n\n${req.description || ""}`
-            : "需要您的确认才能继续执行",
+          content,
           interrupted: true,
           interruptKind: "approval",
           interruptScreenshot: null,
+          interruptDedup: dedup,
         };
       }
       currentThreadId.value = data.thread_id;
@@ -751,6 +770,65 @@ async function resumeChat(decision) {
     if (err.name !== "AbortError") {
       const last2 = messages.value[messages.value.length - 1];
       if (last2?.role === "assistant") { last2.content = "请求失败"; last2.thinking = false; }
+    }
+    sending.value = false;
+    abortController = null;
+  }
+}
+
+// create_skill 命中去重、用户选择"合并"：不走 approve/reject，直接调专门的合并接口——
+// 服务端会自己把两份内容合成一份写回已有 Skill，不需要模型再调用任何工具
+async function mergeSkill() {
+  if (sending.value) return;
+  const last = messages.value[messages.value.length - 1];
+  if (last?.interrupted) last.interrupted = false;
+
+  abortController = new AbortController();
+  messages.value.push({ role: "assistant", content: "", thinking: true, thinkingContent: "", interrupted: false, steps: [], stepsExpanded: false });
+  sending.value = true;
+  scrollBottom(true);
+
+  try {
+    const resp = await fetch("http://localhost:5120/deepAgent/chat/skill-merge", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        thread_id: currentThreadId.value,
+        session_id: currentSessionId.value,
+      }),
+      signal: abortController.signal,
+    });
+
+    const reader  = resp.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let lineBuffer = "";
+
+    while (true) {
+      if (abortController?.signal.aborted) { await reader.cancel(); break; }
+      const { done, value } = await reader.read();
+      if (done) {
+        sending.value = false;
+        const last2 = messages.value[messages.value.length - 1];
+        if (last2?.role === "assistant") last2.thinking = false;
+        abortController = null;
+        scrollBottom();
+        break;
+      }
+      lineBuffer += decoder.decode(value, { stream: true });
+      const lines = lineBuffer.split("\n");
+      lineBuffer = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const payload = line.slice(6).trim();
+        if (!payload || payload === "DONE" || payload === "[DONE]") continue;
+        try { handleStreamEvent(JSON.parse(payload)); } catch (e) { console.error("SSE解析错误:", e, line); }
+      }
+      scrollBottom();
+    }
+  } catch (err) {
+    if (err.name !== "AbortError") {
+      const last2 = messages.value[messages.value.length - 1];
+      if (last2?.role === "assistant") { last2.content = "Skill 合并失败，请重试"; last2.thinking = false; }
     }
     sending.value = false;
     abortController = null;

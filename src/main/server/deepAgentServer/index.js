@@ -1,4 +1,5 @@
 import { success, error500 } from "../responseFn";
+import { z } from "zod";
 import { createDeepAgent, FilesystemBackend } from "deepagents";
 import { contextEditingMiddleware, ClearToolUsesEdit, createMiddleware } from "langchain";
 import { ModelFactory } from "../../model/modelFactory";
@@ -22,6 +23,7 @@ import {
   createAgentManagementTools,
   createExecuteTool,
   createWorkdirReadTools,
+  findSimilarNonBuiltinSkill,
 } from "../../model/agentTools";
 import {
   extractFilesFromZip,
@@ -383,6 +385,9 @@ const threadRunIds = new Map();      // thread_id -> runId，供审批 resume �
 const consumedTraceRunIds = new Set(); // 已沉淀为 Skill / 已使用 Skill 的 run，不再继续写临时轨迹
 const reflectedTraceRunIds = new Set(); // 已经做过完成后 Skill 复盘的 run，避免 resume 后重复触发
 const executedCommandResults = new Map(); // runId -> Map(signature -> { command, result })
+// create_skill 命中去重后，缓存"合并"要用到的完整内容（thread_id -> {targetName, targetContent, proposedContent}）。
+// 不经过模型工具调用——用户点"合并"后由服务端直接调用一次模型把两份内容合成一份，写完直接落盘。
+const pendingSkillMerges = new Map();
 
 function traceNowText(ts = Date.now()) {
   return formatDate(ts);
@@ -548,8 +553,35 @@ function buildTaskTraceSummary(runId) {
   }
 }
 
+// create_skill 命中去重、用户选择"合并"时用：不走模型工具调用，直接拿两份 SKILL.md 内容
+// 请模型合成一份，由服务端直接写回已有 Skill 文件。target 必须是非内置 Skill（由调用方保证）。
+const SkillMergeSchema = z.object({
+  content: z.string().describe("合并后的完整 SKILL.md 内容（含 frontmatter），name 字段必须与目标 Skill 保持一致"),
+});
+
+async function mergeSkillDrafts({ targetName, targetContent, proposedContent }) {
+  const config = ConfigManager.getInstance().getConfig();
+  const agentCfg = config.agent || config.chat;
+  const mergeModel = ModelFactory.getChatModel({
+    customConfig: { provider: agentCfg.provider, modelName: agentCfg.modelName, temperature: agentCfg.temperature },
+    tag: "skill-merge",
+  });
+  const structured = mergeModel.withStructuredOutput(SkillMergeSchema);
+  const prompt =
+    `请把下面两份 Skill 文档合并成一份更完整、去重后的 SKILL.md。要求：\n` +
+    `1. 保留双方有价值的步骤/知识点，去掉重复的部分；\n` +
+    `2. frontmatter 的 name 字段必须保持为 "${targetName}" 不要修改；\n` +
+    `3. 正文只写导航性摘要和调用方法，不要堆砌无关内容。\n\n` +
+    `——— 已有 Skill 当前内容 ———\n${targetContent}\n\n` +
+    `——— 待合并的新内容 ———\n${proposedContent}`;
+  const result = await structured.invoke(prompt);
+  const content = (result?.content || "").trim();
+  if (!content) throw new Error("合并结果为空");
+  return content;
+}
+
 function buildSkillPersistPrompt(traceSummary) {
-  return "用户已经明确确认：希望把本次任务沉淀为可复用 Skill。请基于下面的执行轨迹摘要生成或更新 Skill。\n\n规则：\n1. 如果本次任务读取/使用过某个已有 Skill，并且本次经验适合并入它，请调用 update_skill。\n2. 如果这是现有 Skill 没覆盖的新流程，请调用 create_skill。\n3. 不要只回答“无需创建或更新 Skill”；用户已经选择进入沉淀流程。除非轨迹信息确实不足以形成可复用 Skill，才简要说明无法沉淀。\n4. Skill 内容要写成可复用流程，不要记录一次性的时间、绝对临时路径、偶发输出。\n5. SKILL.md 正文只保留导航性摘要和调用方法；如果轨迹里有可复用的命令片段/脚本、篇幅较长的参考资料（如 API 文档摘录）、或模板类内容，用 create_skill/update_skill 的 files 参数分别拆成 scripts/、references/、assets/ 子目录下的文件，并在 SKILL.md 正文里用相对路径引用它们，不要都堆进 SKILL.md 一个文件。\n\n【本次任务执行轨迹摘要】\n" + traceSummary;
+  return "用户已经明确确认：希望把本次任务沉淀为可复用 Skill。请基于下面的执行轨迹摘要调用 create_skill 生成一个 Skill。\n\n规则：\n1. 始终调用 create_skill，不需要自己判断是否与已有 Skill 重复——哪怕本次任务读取/使用过某个已有 Skill，也照常调用 create_skill；如果系统检测到和已有 Skill 相似，会交给用户决定合并还是仍然新建，不需要你操心。\n2. 不要只回答“无需创建 Skill”；用户已经选择进入沉淀流程。除非轨迹信息确实不足以形成可复用 Skill，才简要说明无法沉淀。\n3. Skill 内容要写成可复用流程，不要记录一次性的时间、绝对临时路径、偶发输出。\n4. SKILL.md 正文只保留导航性摘要和调用方法；如果轨迹里有可复用的命令片段/脚本、篇幅较长的参考资料（如 API 文档摘录）、或模板类内容，用 create_skill 的 files 参数分别拆成 scripts/、references/、assets/ 子目录下的文件，并在 SKILL.md 正文里用相对路径引用它们，不要都堆进 SKILL.md 一个文件。\n\n【本次任务执行轨迹摘要】\n" + traceSummary;
 }
 
 function shouldAskSkillReflection(runId) {
@@ -649,12 +681,40 @@ function duplicateExecuteDecisions(runId, interruptData) {
 }
 
 // 1级权限（自动同意）下，把本次中断请求全部批准；仅对 run_command 生效——
-// create_skill/update_skill 固定需要人工审批，不受这个开关影响
+// create_skill 固定需要人工审批，不受这个开关影响
 function autoApproveDecisions(interruptData) {
   const requests = interruptData?.value?.actionRequests || [];
   if (!requests.length) return null;
   if (!requests.every((r) => r?.name === "run_command")) return null;
   return requests.map(() => ({ type: "approve" }));
+}
+
+// create_skill 提议命中已有非内置 Skill 的疑似重复时，把去重信息挂到中断数据上，
+// 前端据此把默认的"同意执行/拒绝"两个按钮换成"合并/直接创建/取消"，避免同类 Skill 越攒越多。
+// 只处理单个 create_skill 请求的场景；内置 Skill 不参与比较（见 findSimilarNonBuiltinSkill）。
+// "合并"不走模型工具调用——把完整内容缓存到 pendingSkillMerges，由 /chat/skill-merge 直接处理。
+function attachSkillDedupInfo(interruptData, threadId) {
+  const requests = interruptData?.value?.actionRequests || [];
+  if (requests.length !== 1 || requests[0]?.name !== "create_skill") return;
+  const args = requests[0].args || {};
+  const match = findSimilarNonBuiltinSkill({ name: args.name, description: args.description });
+  if (!match) return;
+
+  interruptData.value.dedupMatch = {
+    targetName: match.name,
+    targetDisplayName: match.displayName,
+    targetDescription: match.description,
+    proposedName: args.name,
+    proposedDescription: args.description || "",
+  };
+
+  if (threadId) {
+    pendingSkillMerges.set(threadId, {
+      targetName: match.name,
+      targetContent: match.content,
+      proposedContent: args.content || `(未提供正文，仅有描述：${args.description || ""})`,
+    });
+  }
 }
 
 // 清理 MemorySaver 中已完成 thread 的 checkpoint，防止内存泄漏
@@ -841,8 +901,10 @@ async function createAgent() {
   // 传父目录 /skills/，lib 会自动扫描其中启用的子目录（SKILL.md 存在的）
   const skillsSource = hasAnyEnabledSkill() ? ["/skills/"] : undefined;
 
-  // 主 Agent 自建/自改 Skill 的工具；子 Agent 不持久化，复杂任务使用 deepagents 内置 task 临时委托
-  const { create_skill, update_skill } = createAgentManagementTools({
+  // 主 Agent 自建 Skill 的工具；子 Agent 不持久化，复杂任务使用 deepagents 内置 task 临时委托。
+  // 注意：不再绑定 update_skill——沉淀只能走 create_skill，命中去重后是否合并由 /chat/skill-merge
+  // 在服务端直接处理（不经过模型工具调用），避免模型绕开去重检测自己直接调 update_skill 覆盖已有 Skill。
+  const { create_skill } = createAgentManagementTools({
     invalidateAgent,
     onSkillPersisted: ({ runId, skillName, skillAction }) => {
       if (!runId) return;
@@ -878,7 +940,6 @@ async function createAgent() {
     composeVideoTool,
     extractLastFrameTool,
     create_skill,
-    update_skill,
     list_workdir,
     read_workdir_file,
     ...(permissions.enableShellExecute ? [execute] : []),
@@ -894,9 +955,8 @@ async function createAgent() {
       delete_file: false,
       // 命令执行一旦开启，强制人工审批，不受其他开关影响
       ...(permissions.enableShellExecute ? { run_command: true } : {}),
-      // 自建/自改 Skill 固定需要审批，不受配置影响
+      // 自建 Skill 固定需要审批，不受配置影响
       create_skill: true,
-      update_skill: true,
     },
     tools: finalTools,
     checkpointer,
@@ -1453,6 +1513,7 @@ deepChat.post("/chat", async (req, res) => {
               if (res.flush) res.flush();
               break;
             }
+            attachSkillDedupInfo(nodeData[0], requestThreadId);
             interrupted = true;
             trace({
               eventType: "interrupt",
@@ -1714,6 +1775,7 @@ deepChat.post("/chat/skill-review", async (req, res) => {
         const nodeData = chunk[nodeName];
 
         if (nodeName === "__interrupt__" && nodeData?.length > 0) {
+          attachSkillDedupInfo(nodeData[0], thread_id);
           reviewInterrupted = true;
           writeTaskTrace({
             runId,
@@ -1853,8 +1915,10 @@ deepChat.post("/chat/resume", async (req, res) => {
     });
 
     // 用户拒绝：直接终止本轮，不再让模型继续尝试其他方式——不调用 agent.stream 恢复图执行，
-    // 直接清理这个 thread 的 checkpoint（图停留在中断点，不会有后续动作），响应一条终止提示
-    if (finalDecisions.length > 0 && finalDecisions.every((d) => d.type === "reject")) {
+    // 直接清理这个 thread 的 checkpoint（图停留在中断点，不会有后续动作），响应一条终止提示。
+    // 注意：带 message 的 reject（如 Skill 去重时用户选择"替换/合并"）不算这里的"纯拒绝"——
+    // 那种情况需要把 message 当反馈继续喂给模型，走下面的正常恢复流程，不能在这里被拦截。
+    if (finalDecisions.length > 0 && finalDecisions.every((d) => d.type === "reject" && !d.message)) {
       agentLog("审批拒绝", `thread=${thread_id}, 用户拒绝，直接终止本轮`);
       cleanupThread(thread_id);
       executedCommandResults.delete(runId);
@@ -2002,6 +2066,7 @@ deepChat.post("/chat/resume", async (req, res) => {
               if (res.flush) res.flush();
               break;
             }
+            attachSkillDedupInfo(nodeData[0], thread_id);
             resumeInterrupted = true;
             agentLog("再次中断", `thread=${thread_id}, 需再次审批`);
             writeTaskTrace({
@@ -2154,6 +2219,105 @@ deepChat.post("/chat/resume", async (req, res) => {
       status: "error",
     });
     res.write(`data: ${JSON.stringify({ type: "error", error: error.message })}\n\n`);
+    res.end();
+  }
+});
+
+// ─── Skill 沉淀去重后的"合并"入口 ───────────────────────────────────────
+// 用户在去重卡片上选"合并"：不经过模型工具调用，服务端直接把两份内容合成一份并写回已有 Skill，
+// 然后把原本被打断的 create_skill 调用标成"已处理"，让图正常收尾，不需要模型再调用任何工具。
+deepChat.post("/chat/skill-merge", async (req, res) => {
+  const { thread_id, session_id } = req.body;
+  if (!thread_id) return res.status(400).json({ error: "thread_id is required" });
+  const pending = pendingSkillMerges.get(thread_id);
+  if (!pending) return res.status(400).json({ error: "没有待合并的 Skill 信息（可能已处理或已过期）" });
+  const runId = getRunIdByThread(thread_id);
+
+  setupSSE(req, res);
+  const backendAbort = new AbortController();
+  let responseDone = false;
+  res.on("close", () => { if (!responseDone) backendAbort.abort(); });
+
+  try {
+    // 防御性兜底：目标必须不是内置 Skill（findSimilarNonBuiltinSkill 理论上已经保证，这里再确认一次）
+    const skillDir = path.join(getSystemPath("skills"), pending.targetName);
+    const { mdPath } = resolveSkillMdPath(skillDir);
+    if (mdPath) {
+      const { isBuiltin } = parseSkillMd(fs.readFileSync(mdPath, "utf-8"));
+      if (isBuiltin) throw new Error("目标是内置 Skill，不可合并覆盖");
+    }
+
+    res.write(`data: ${JSON.stringify({ type: "message_stream", content: "正在合并 Skill 内容...\n\n" })}\n\n`);
+    if (res.flush) res.flush();
+
+    const mergedContent = await mergeSkillDrafts(pending);
+    updateSkillContent(pending.targetName, mergedContent);
+    invalidateAgent();
+    pendingSkillMerges.delete(thread_id);
+
+    writeTaskTrace({
+      runId,
+      sessionId: session_id || null,
+      threadId: thread_id,
+      eventType: "skill_persisted",
+      title: "Skill 已合并更新",
+      skillName: pending.targetName,
+      skillAction: "merge",
+      payload: { skillName: pending.targetName, skillAction: "merge" },
+    });
+    agentLog("Skill合并", `thread=${thread_id}, target=${pending.targetName}`);
+
+    const doneMsg = `已将内容合并进 Skill「${pending.targetName}」。`;
+    res.write(`data: ${JSON.stringify({ type: "message_stream", content: doneMsg })}\n\n`);
+    if (res.flush) res.flush();
+    if (session_id) {
+      try { saveAssistantMessage(session_id, doneMsg); } catch {}
+    }
+
+    // 恢复原本被打断的 create_skill 调用：告诉模型已经处理完毕，不需要再创建/再调用任何工具
+    const agent = await getAgent();
+    const stream = await agent.stream(
+      new Command({
+        resume: {
+          decisions: [{
+            type: "reject",
+            message: `用户已选择将这份内容合并进已有 Skill「${pending.targetName}」，合并和落盘均已由系统完成，不需要你再创建新 Skill 或调用任何工具。`,
+          }],
+        },
+      }),
+      { configurable: { thread_id, session_id: session_id || null, run_id: runId }, streamMode: ["updates", "messages"], signal: backendAbort.signal }
+    );
+
+    for await (const [mode, chunk] of stream) {
+      if (backendAbort.signal.aborted) break;
+      if (mode === "messages") {
+        const [msg] = chunk;
+        if (msg?.content && typeof msg.content === "string") {
+          res.write(`data: ${JSON.stringify({ type: "message_stream", content: msg.content })}\n\n`);
+          if (res.flush) res.flush();
+        }
+      } else if (mode === "updates") {
+        const nodeName = Object.keys(chunk)[0];
+        const nodeData = chunk[nodeName];
+        if (nodeName === "__interrupt__" && nodeData?.length > 0) {
+          // 理论上不会再触发（消息里已明确告知模型无需再调用工具），保留兜底：原样转发给前端
+          res.write(`data: ${JSON.stringify({ type: "interrupt", node: nodeName, thread_id, interruptData: nodeData[0] })}\n\n`);
+          if (res.flush) res.flush();
+          responseDone = true;
+          res.end();
+          return;
+        }
+      }
+    }
+
+    responseDone = true;
+    res.write(`data: ${JSON.stringify({ type: "done", thread_id })}\n\n`);
+    res.end();
+  } catch (e) {
+    pendingSkillMerges.delete(thread_id);
+    agentLog("Skill合并失败", `thread=${thread_id}, error=${e.message}`);
+    responseDone = true;
+    res.write(`data: ${JSON.stringify({ type: "error", error: e.message })}\n\n`);
     res.end();
   }
 });

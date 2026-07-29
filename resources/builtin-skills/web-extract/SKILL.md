@@ -1,7 +1,7 @@
 ---
 name: web-extract
 description: 浏览器自动化工具。当用户需要打开网页、与页面交互、填写表单、上传文件、截图、提取数据时使用。所有操作通过单一 browser 工具完成，参数 action 指定操作类型。
-version: 1.0.3
+version: 1.0.4
 builtin: true
 ---
 
