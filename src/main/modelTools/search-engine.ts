@@ -25,6 +25,8 @@ export interface SearchOptions {
     debug?: boolean;
     /** 代理地址，如 'http://127.0.0.1:7890'；不传则使用系统设置里的代理模式 */
     proxy?: string;
+    /** 持久化会话分区，默认 'persist:ai-search'；同一分区共享 Cookie/登录态，越用越不容易触发验证码 */
+    partition?: string;
 }
 
 export interface SearchResponse {
@@ -44,6 +46,10 @@ export async function webSearch({
     query,
     limit = 10,
     options = {}
+}: {
+    query: string;
+    limit?: number;
+    options?: SearchOptions;
 }
 ): Promise<SearchResponse> {
     const opts = {
@@ -53,6 +59,7 @@ export async function webSearch({
         waitTime: 3000,
         debug: false,
         proxy: undefined as string | undefined,
+        partition: 'persist:ai-search',
         ...options
     };
     console.log(opts,"opts");
@@ -65,7 +72,8 @@ export async function webSearch({
         width: 1920,
         height: 1080,
         proxy: opts.proxy,
-        noProxy: forceDirect
+        noProxy: forceDirect,
+        partition: opts.partition
     });
 
     try {
@@ -115,29 +123,50 @@ export async function webSearch({
             await new Promise(r => setTimeout(r, opts.waitTime));
         }
 
-        const finalUrl = page.url();
+        let finalUrl = page.url();
         console.log(`[Search] 实际URL: ${finalUrl}`);
 
         // 处理可能的验证码或弹窗（简单处理）
         await handleAntiBot(page);
 
-        const html = await page.content();
+        let html = await page.content();
         console.log(`[Search] HTML长度: ${html.length}, 片段: ${html.slice(0, 300).replace(/\s+/g, ' ')}`);
 
-        // 验证码/安全验证检测：命中则不再解析（必是 0 条），直接返回提示让模型改用其他搜索引擎重试
+        // 验证码/安全验证检测：先弹出可见窗口（同一持久化分区）让用户手动处理一次，
+        // 处理完这个分区就被信任了，后续无头搜索大概率不会再触发
         if (detectBlocked(finalUrl, html)) {
-            // bing 优先级调到最低：只有 baidu/sogou/google/duckduckgo 都失败后才轮到它兜底
-            const fallbackChain: Record<string, string> = {
-                baidu: 'sogou',
-                sogou: 'google',
-                google: 'duckduckgo',
-                duckduckgo: 'bing',
-                bing: 'baidu'
-            };
-            const suggest = fallbackChain[opts.engine] || 'baidu';
-            const msg = `${opts.engine} 搜索触发了安全验证（验证码），本次未获取到结果。请改用 ${suggest} 搜索引擎重试：调用本工具时把 engine 参数设为 "${suggest}"。`;
-            console.warn(`[Search] ${msg}`);
-            return { success: false, query, results: [], error: msg };
+            console.warn(`[Search] ${opts.engine} 触发安全验证，弹出可见窗口等待手动处理...`);
+            const solved = await escalateToVisibleForManualSolve(finalUrl, opts.partition, opts.proxy, forceDirect);
+
+            if (solved) {
+                console.log(`[Search] 验证已手动处理，重新加载搜索页...`);
+                try {
+                    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+                    if (waitSelector) {
+                        await page.waitForSelector(waitSelector, { timeout: opts.waitTime }).catch(() => {});
+                    }
+                } catch (e: any) {
+                    console.warn(`[Search] 手动处理后重新加载失败: ${e.message}`);
+                }
+                finalUrl = page.url();
+                html = await page.content();
+            }
+
+            if (!solved || detectBlocked(finalUrl, html)) {
+                // bing 优先级调到最低：只有 baidu/sogou/google/duckduckgo 都失败后才轮到它兜底
+                const fallbackChain: Record<string, string> = {
+                    baidu: 'sogou',
+                    sogou: 'google',
+                    google: 'duckduckgo',
+                    duckduckgo: 'bing',
+                    bing: 'baidu'
+                };
+                const suggest = fallbackChain[opts.engine] || 'baidu';
+                const reason = solved ? '手动处理后仍未通过验证' : '等待手动处理超时';
+                const msg = `${opts.engine} 搜索触发了安全验证（验证码），${reason}，本次未获取到结果。请改用 ${suggest} 搜索引擎重试：调用本工具时把 engine 参数设为 "${suggest}"。`;
+                console.warn(`[Search] ${msg}`);
+                return { success: false, query, results: [], error: msg };
+            }
         }
 
         let results = parseSearchResults(html, opts.engine, opts.limit);
@@ -297,6 +326,7 @@ function parseSearchResults(html: string, engine: string, limit: number): Search
                         source: new URL(cleanUrl(url)).hostname
                     });
                 }
+                return;
             });
             break;
 
@@ -348,6 +378,7 @@ function parseSearchResults(html: string, engine: string, limit: number): Search
                         source: new URL(url).hostname
                     });
                 } catch { /* 无效 URL 跳过 */ }
+                return;
             });
 
             // --- Pass 2: 新闻卡片（整个 <a> 是卡片容器，无 h3，标题在叶节点 div 内）---
@@ -385,6 +416,7 @@ function parseSearchResults(html: string, engine: string, limit: number): Search
                         source: new URL(url).hostname
                     });
                 } catch { /* 无效 URL 跳过 */ }
+                return;
             });
 
             break;
@@ -408,6 +440,7 @@ function parseSearchResults(html: string, engine: string, limit: number): Search
                         source: 'baidu.com'
                     });
                 }
+                return;
             });
             break;
 
@@ -431,6 +464,7 @@ function parseSearchResults(html: string, engine: string, limit: number): Search
                         source: (() => { try { return new URL(url).hostname; } catch { return 'duckduckgo.com'; } })()
                     });
                 }
+                return;
             });
             break;
 
@@ -454,6 +488,7 @@ function parseSearchResults(html: string, engine: string, limit: number): Search
                         source: 'sogou.com'
                     });
                 }
+                return;
             });
             break;
     }
@@ -521,6 +556,53 @@ function detectBlocked(finalUrl: string, html: string): boolean {
     if (lower.includes('unusual traffic from your computer')) return true; // Google
     if (lower.includes("i'm not a robot") || html.includes('我不是机器人')) return true;
     return false;
+}
+
+/**
+ * 命中验证码时弹出一个可见窗口（复用同一持久化分区），等待用户手动处理完成。
+ * 只要分区一致，这里手动过一次验证之后，无头窗口共享同一份 Cookie，后续大概率不会再被拦。
+ * 用户中途关掉弹出的窗口视为放弃，直接返回 false。
+ */
+async function escalateToVisibleForManualSolve(
+    url: string,
+    partition = 'persist:ai-search',
+    proxy?: string,
+    noProxy?: boolean,
+    timeoutMs = 120000
+): Promise<boolean> {
+    const { page: visPage, window: visWin } = await browserManager.newPage({
+        headless: false,
+        show: true,
+        offscreen: false,
+        width: 1200,
+        height: 900,
+        proxy,
+        noProxy,
+        partition
+    });
+
+    try {
+        await visPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+        visWin.show();
+        visWin.focus();
+        console.warn(`[Search] 请在弹出的窗口中手动完成验证，最长等待 ${Math.round(timeoutMs / 1000)}s`);
+
+        const start = Date.now();
+        while (Date.now() - start < timeoutMs) {
+            if (visWin.isDestroyed()) return false;
+            await new Promise(r => setTimeout(r, 2000));
+            try {
+                const curUrl = visPage.url();
+                const curHtml = await visPage.content();
+                if (!detectBlocked(curUrl, curHtml)) return true;
+            } catch {
+                // 页面可能正在导航，忽略本轮检测，下一轮重试
+            }
+        }
+        return false;
+    } finally {
+        if (!visWin.isDestroyed()) visWin.close();
+    }
 }
 
 /**
@@ -675,6 +757,43 @@ async function extractGoogleAIOverview(page: Page): Promise<string | null> {
         console.warn('[AIOverview] 提取失败:', e.message);
         return null;
     }
+}
+
+// ============ 会话养号 ============
+
+const engineHomepages: Record<string, string> = {
+    bing: 'https://www.bing.com',
+    google: 'https://www.google.com',
+    baidu: 'https://www.baidu.com',
+    duckduckgo: 'https://duckduckgo.com',
+    sogou: 'https://www.sogou.com'
+};
+
+/**
+ * 打开一个可见窗口供用户手动"养号"：正常搜索几次、遇到验证码手动过一下。
+ * 使用与 webSearch 相同的持久化分区（默认 persist:ai-search），养熟后无头搜索会一并受益。
+ * 窗口不自动关闭，用户用完自行关闭即可。
+ */
+export async function warmupSearchSession(
+    engine: SearchOptions['engine'] = 'baidu',
+    partition = 'persist:ai-search'
+): Promise<{ success: boolean; message: string }> {
+    const homepage = engineHomepages[engine as string] || engineHomepages.baidu;
+    const { page, window: win } = await browserManager.newPage({
+        headless: false,
+        show: true,
+        offscreen: false,
+        width: 1200,
+        height: 900,
+        partition
+    });
+    await page.goto(homepage, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+    win.show();
+    win.focus();
+    return {
+        success: true,
+        message: `已打开 ${engine}，请正常搜索几次、遇到验证码手动过一下，完成后关闭该窗口即可`
+    };
 }
 
 // ============ 便捷函数 ============

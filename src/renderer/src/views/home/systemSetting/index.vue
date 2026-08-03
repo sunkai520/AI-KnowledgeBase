@@ -90,6 +90,22 @@
         <el-form-item label=" ">
           <el-button type="primary" :loading="savingBrowser" @click="saveBrowserConfig">保存浏览器配置</el-button>
         </el-form-item>
+
+        <div class="content-divider" style="margin: 16px 0;" />
+
+        <el-form-item label="AI 联网搜索">
+          <div class="row-with-btn">
+            <el-select v-model="warmupEngine" style="width: 140px">
+              <el-option label="百度" value="baidu" />
+              <el-option label="谷歌" value="google" />
+              <el-option label="必应" value="bing" />
+              <el-option label="搜狗" value="sogou" />
+              <el-option label="DuckDuckGo" value="duckduckgo" />
+            </el-select>
+            <el-button :loading="warmingUp" @click="warmupSearch">打开并养号</el-button>
+          </div>
+          <div class="tip">AI 联网搜索默认使用独立的持久化会话，首次使用建议在弹出的窗口里正常搜索几次、遇到验证码手动过一下，之后 AI 自动搜索会更不容易被拦。</div>
+        </el-form-item>
       </el-form>
 
       <!-- 代理设置 -->
@@ -346,6 +362,8 @@ const dataDir = ref('');
 const machineId = ref('');
 const browserExePath = ref('');
 const browserUserDataDir = ref('');
+const warmupEngine = ref('baidu');
+const warmingUp = ref(false);
 const savingBrowser = ref(false);
 const detectedExePath = ref('');
 const detectedUserDataDir = ref('');
@@ -791,6 +809,22 @@ async function selectBrowserExe() {
 async function selectBrowserUserDataDir() {
   const dir = await window.electronAPI.selectBrowserUserDataDir();
   if (dir) browserUserDataDir.value = dir;
+}
+
+async function warmupSearch() {
+  warmingUp.value = true;
+  try {
+    const result = await window.electronAPI.warmupSearchSession(warmupEngine.value);
+    if (result?.success) {
+      ElMessage.success(result.message || '已打开窗口，请手动搜索并处理验证码');
+    } else {
+      ElMessage.error('打开失败');
+    }
+  } catch (e) {
+    ElMessage.error(`打开失败：${e?.message || e}`);
+  } finally {
+    warmingUp.value = false;
+  }
 }
 
 async function saveBrowserConfig() {

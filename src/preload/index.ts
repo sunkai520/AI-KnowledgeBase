@@ -75,6 +75,8 @@ if (process.contextIsolated) {
             testProxy: (proxyUrl: string, proxyMode?: string) => ipcRenderer.invoke('setting:testProxy', proxyUrl, proxyMode),
             configureOnlineSearchProxy: (engine: string) => ipcRenderer.invoke('onlineSearch:configureProxy', engine),
             clearOnlineSearchProxy: () => ipcRenderer.invoke('onlineSearch:clearProxy'),
+            // AI 联网搜索会话养号：打开可见窗口，手动搜几次/过验证码，之后无头搜索共享同一分区
+            warmupSearchSession: (engine?: string) => ipcRenderer.invoke('search:warmupSession', engine),
             // PAC 名单管理
             getPacListInfo: () => ipcRenderer.invoke('pac:getListInfo'),
             updatePacList: () => ipcRenderer.invoke('pac:updateList'),

@@ -8,6 +8,7 @@ import { ModelFactory } from '../model/modelFactory';
 import { ConfigManager } from '../config/configmangger';
 import { ScheduledTaskManager } from '../scheduledTask/scheduledTaskManager';
 import { planOrganize, applyOrganize, listOrganizeHistory, undoOrganize } from '../folderOrganizer/organizer';
+import { warmupSearchSession } from '../modelTools/search-engine';
 const nettcp = require("net");
 const dgram = require("dgram");
 var sudo = require('sudo-prompt');
@@ -303,6 +304,12 @@ export function initEvent(ipcMain, mainWindow) {
       const searchSession = session.fromPartition('persist:online-search');
       await applyProxyToSession(searchSession, { forceDirect: true });
       return { success: true };
+    });
+
+    // AI 联网搜索会话养号：打开一个可见窗口，用户手动搜几次/过一次验证码，
+    // 之后 webSearch 工具默认复用同一持久化分区（persist:ai-search），大概率不再触发验证码
+    ipcMain.handle('search:warmupSession', async (_event, engine?: string) => {
+      return warmupSearchSession(engine as any);
     });
 
     // PAC 名单：中国大陆域名白名单（默认走代理，命中白名单则直连）

@@ -3,6 +3,7 @@ import { app, App, BrowserWindow, BrowserWindowConstructorOptions } from 'electr
 import pie from 'puppeteer-in-electron';
 import puppeteer, { Browser } from 'puppeteer-core';
 import { applyProxyToSession } from './proxyConfig';
+import icon from '../../../resources/icon.png?asset';
 
 export class BrowserManager {
   private static instance: BrowserManager;
@@ -61,19 +62,25 @@ export class BrowserManager {
       // 代理地址，如 'http://127.0.0.1:7890'；不传则使用系统设置里的代理模式
       proxy,
       // 强制直连：跳过代理探测并显式禁用代理（用于百度等国内站点，避免代理 IP 触发验证码）
-      noProxy = false
+      noProxy = false,
+      // 持久化分区名，如 'persist:ai-search'；不传则用 Electron 默认（不持久化的）会话，
+      // 每次都是全新无 Cookie 的窗口。传同一个 partition 可以让多次调用共享登录态/Cookie。
+      partition
     } = options;
 
     const winConfig: BrowserWindowConstructorOptions = {
       width,
       height,
       show,
+      icon,
+      autoHideMenuBar: true,
       webPreferences: {
         offscreen: headless && offscreen,
         nodeIntegration: false,
         contextIsolation: true,
         sandbox: true,
-        preload
+        preload,
+        partition
       }
     };
 
