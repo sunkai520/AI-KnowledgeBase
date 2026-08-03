@@ -249,7 +249,37 @@
           <el-icon color="#f59e0b"><Warning /></el-icon>
           <span>{{ interruptedMessage.interruptKind === 'browser_blocked' ? '需要手动处理' : '需要确认' }}</span>
         </div>
-        <div class="interrupt-toast-body" v-html="renderInterrupt(interruptedMessage.content)"></div>
+        <div class="interrupt-toast-scroll">
+          <div class="interrupt-toast-body" v-html="renderInterrupt(interruptedMessage.content)"></div>
+
+          <!-- 多个待审批调用：逐条列出，每条各自同意/拒绝 -->
+          <div v-if="interruptedMessage.interruptRows" class="interrupt-rows">
+            <div
+              v-for="(row, i) in interruptedMessage.interruptRows"
+              :key="i"
+              class="interrupt-row"
+              :class="{ 'is-approved': row.decision === 'approve', 'is-rejected': row.decision === 'reject' }"
+            >
+              <div class="interrupt-row-index">第 {{ i + 1 }}/{{ interruptedMessage.interruptRows.length }} 个</div>
+              <div class="interrupt-row-text" v-html="renderInterrupt(row.text)"></div>
+              <div class="interrupt-row-actions">
+                <el-button
+                  size="small"
+                  :type="row.decision === 'reject' ? 'danger' : 'default'"
+                  :disabled="sending"
+                  @click="setRowDecision(i, 'reject')"
+                >拒绝</el-button>
+                <el-button
+                  size="small"
+                  :type="row.decision === 'approve' ? 'primary' : 'default'"
+                  :disabled="sending"
+                  @click="setRowDecision(i, 'approve')"
+                >同意</el-button>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <img
           v-if="interruptedMessage.interruptScreenshot"
           :src="interruptedMessage.interruptScreenshot"
@@ -264,6 +294,16 @@
             <el-button size="small" :disabled="sending" @click="resumeChat('reject')">取消</el-button>
             <el-button size="small" :disabled="sending" @click="mergeSkill()">合并</el-button>
             <el-button type="primary" size="small" :disabled="sending" @click="resumeChat('approve')">直接创建</el-button>
+          </template>
+          <template v-else-if="interruptedMessage.interruptRows">
+            <el-button size="small" :disabled="sending" @click="setAllRowDecisions('reject')">全部拒绝</el-button>
+            <el-button size="small" :disabled="sending" @click="setAllRowDecisions('approve')">全部同意</el-button>
+            <el-button
+              type="primary"
+              size="small"
+              :disabled="sending || !allInterruptRowsDecided"
+              @click="submitRowDecisions()"
+            >提交决定</el-button>
           </template>
           <template v-else>
             <el-button size="small" :disabled="sending" @click="resumeChat('reject')">拒绝</el-button>
@@ -672,20 +712,31 @@ function handleStreamEvent(data) {
           interruptScreenshot: value.screenshot || null,
         };
       } else {
-        const req = value?.actionRequests?.[0];
+        const requests = value?.actionRequests || [];
+        const req = requests[0];
         const dedup = value?.dedupMatch || null;
+        // 单个请求的展示文案（含 create_skill 正文预览），供下面单请求/多请求两种情况复用
+        const describeRequest = (r) => {
+          const previewSource = r.name === "create_skill" ? r.args?.content : null;
+          const preview = previewSource
+            ? `\n\n--- 内容预览 ---\n${String(previewSource).slice(0, 800)}${previewSource.length > 800 ? "\n...(已截断)" : ""}`
+            : "";
+          return `需要执行：**${r.name}**\n\n${r.description || ""}${preview}`;
+        };
         let content;
+        let interruptRows = null;
         if (dedup) {
           content = `检测到与已有 Skill「${dedup.targetDisplayName || dedup.targetName}」相似，为避免创建重复 Skill，请选择处理方式：\n\n` +
             `**新内容用途**：${dedup.proposedDescription || req?.description || "（未填写）"}\n` +
             `**已有 Skill 用途**：${dedup.targetDescription || "（未填写）"}`;
+        } else if (requests.length > 1) {
+          // 模型这一轮同时发起了多个待审批调用——不能只给一个"整批同意/整批拒绝"，用户应该能
+          // 分别看清楚每一条并单独决定。content 只放一句概述，具体每一条走下面的 interruptRows，
+          // 由模板渲染成可交互的逐条同意/拒绝列表。
+          content = `模型这一轮同时请求执行 **${requests.length}** 个操作，请对每一条分别确认：`;
+          interruptRows = requests.map((r) => ({ name: r.name, text: describeRequest(r), decision: null }));
         } else if (req) {
-          // create_skill 的正文预览，方便确认前先看一眼实际要写入的内容
-          const previewSource = req.name === "create_skill" ? req.args?.content : null;
-          const preview = previewSource
-            ? `\n\n--- 内容预览 ---\n${String(previewSource).slice(0, 800)}${previewSource.length > 800 ? "\n...(已截断)" : ""}`
-            : "";
-          content = `需要执行：**${req.name}**\n\n${req.description || ""}${preview}`;
+          content = describeRequest(req);
         } else {
           content = "需要您的确认才能继续执行";
         }
@@ -697,6 +748,13 @@ function handleStreamEvent(data) {
           interruptKind: "approval",
           interruptScreenshot: null,
           interruptDedup: dedup,
+          interruptRows,
+          // 模型有时会在同一轮里发起多个需要审批的工具调用（如两次 run_command），
+          // LangGraph resume 时必须传回同样数量的 decisions，数量对不上会直接报错
+          // "Number of human decisions does not match number of hanging tool calls"。
+          // interruptRows 存在时走逐条提交（submitRowDecisions），否则走这里的整批提交，
+          // 按这个数量把同一个决定复制够份数一起交给 resumeChat。
+          interruptActionRequestCount: value?.actionRequests?.length || 1,
         };
       }
       currentThreadId.value = data.thread_id;
@@ -744,7 +802,9 @@ function friendlyError(raw = "") {
   return raw || "未知错误，请稍后重试";
 }
 
-async function resumeChat(decision) {
+// 提交审批决定的共用逻辑：resumeChat（整批同一个决定）和 submitRowDecisions（逐条决定）都走这里，
+// decisions 数组的长度必须和这一轮挂起的工具调用数一致，否则 LangGraph resume 会报数量不匹配的错误。
+async function submitDecisions(decisions) {
   if (sending.value) return;
   const last = messages.value[messages.value.length - 1];
   if (last?.interrupted) last.interrupted = false;
@@ -761,7 +821,7 @@ async function resumeChat(decision) {
       body: JSON.stringify({
         thread_id: currentThreadId.value,
         session_id: currentSessionId.value,
-        decisions: [{ type: decision }],
+        decisions,
       }),
       signal: abortController.signal,
     });
@@ -800,6 +860,38 @@ async function resumeChat(decision) {
     sending.value = false;
     abortController = null;
   }
+}
+
+// 单一决定（同意/拒绝/换个方式/继续）对这一轮挂起的所有工具调用一视同仁——
+// browser_blocked、Skill 去重、以及只有 1 个待审批调用时都走这条路径
+async function resumeChat(decision) {
+  const last = messages.value[messages.value.length - 1];
+  const decisionCount = last?.interruptActionRequestCount || 1;
+  await submitDecisions(Array.from({ length: decisionCount }, () => ({ type: decision })));
+}
+
+// 逐条审批：每个挂起的工具调用各自的同意/拒绝状态，凑齐后一次性提交
+async function setRowDecision(index, decision) {
+  const rows = interruptedMessage.value?.interruptRows;
+  if (!rows?.[index]) return;
+  rows[index].decision = decision;
+}
+
+function setAllRowDecisions(decision) {
+  const rows = interruptedMessage.value?.interruptRows;
+  if (!rows) return;
+  rows.forEach((row) => { row.decision = decision; });
+}
+
+const allInterruptRowsDecided = computed(() => {
+  const rows = interruptedMessage.value?.interruptRows;
+  return !!rows?.length && rows.every((row) => row.decision === "approve" || row.decision === "reject");
+});
+
+async function submitRowDecisions() {
+  const rows = interruptedMessage.value?.interruptRows;
+  if (!rows?.length || !allInterruptRowsDecided.value) return;
+  await submitDecisions(rows.map((row) => ({ type: row.decision })));
 }
 
 // create_skill 命中去重、用户选择"合并"：不走 approve/reject，直接调专门的合并接口——
@@ -1347,17 +1439,68 @@ onUnmounted(() => { if (abortController) abortController.abort(); });
   flex-shrink: 0;
 }
 
+.interrupt-toast-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  margin-bottom: 16px;
+}
+
 .interrupt-toast-body {
   font-size: 13px;
   color: #334155;
   line-height: 22px;
   word-break: break-word;
-  margin-bottom: 16px;
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
 
   :deep(strong) { color: #0f172a; }
+}
+
+.interrupt-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.interrupt-row {
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #f8fafc;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.interrupt-row.is-approved {
+  border-color: #93c5fd;
+  background: #f5f9ff;
+}
+
+.interrupt-row.is-rejected {
+  border-color: #fca5a5;
+  background: #fef2f2;
+}
+
+.interrupt-row-index {
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+  margin-bottom: 4px;
+}
+
+.interrupt-row-text {
+  font-size: 13px;
+  color: #334155;
+  line-height: 20px;
+  word-break: break-word;
+  margin-bottom: 8px;
+
+  :deep(strong) { color: #0f172a; }
+}
+
+.interrupt-row-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .interrupt-toast-screenshot {
