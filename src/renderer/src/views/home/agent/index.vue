@@ -320,7 +320,7 @@ function getStepName(step) {
     return BROWSER_ACTION_NAMES[step.action] || '浏览器操作';
   }
   if (step.tool === 'run_command' && step.action === 'auto_approved') {
-    return '执行命令（1级权限自动批准）';
+    return '执行命令（已自动批准）';
   }
   return TOOL_NAMES[step.tool] || step.tool;
 }
@@ -388,19 +388,45 @@ async function handleChangeWorkDir() {
   }
 }
 
-// 当前会话的命令执行审批级别：auto=1级自动同意 / confirm=2级需人工确认（默认）
+// 当前会话的命令执行审批级别：confirm=1级需人工确认（默认）/ auto=2级自动同意 / unrestricted=3级完全放开
 const currentPermissionLevel = computed(() => {
   const s = sessions.value.find(s => s.sessionId === currentSessionId.value);
-  return s?.permissionLevel === "auto" ? "auto" : "confirm";
+  return ["auto", "unrestricted"].includes(s?.permissionLevel) ? s.permissionLevel : "confirm";
 });
 
 async function handlePermissionLevelChange(level) {
   if (!currentSessionId.value) return;
+  // 3级会跳过工作目录越权校验（环境变量展开、重定向越界等都不再拦截），一旦切换过去，
+  // 模型执行的任何命令都会原样丢给真实 shell、不设防地在本机跑——必须让用户先明确知情同意，
+  // 不能像 1/2 级之间切换那样点一下就悄悄生效。
+  if (level === "unrestricted") {
+    try {
+      await ElMessageBox.confirm(
+        "3级「完全放开」会关闭所有安全校验：不再限制命令只能访问会话工作目录，不再拦截环境变量展开、重定向越界等风险写法，且执行前不会再弹窗确认。" +
+          "模型的每一条命令都会原样在你的电脑上真实执行，可能读写工作目录之外的任意文件。" +
+          "只在你完全信任当前任务、且能自己承担后果时使用。确定要切换吗？",
+        "切换到3级·完全放开",
+        {
+          confirmButtonText: "我已知情，确定切换",
+          cancelButtonText: "取消",
+          type: "warning",
+          dangerouslyUseHTMLString: false,
+          customClass: "unrestricted-confirm-box",
+        }
+      );
+    } catch {
+      return; // 用户取消，维持原权限级别不变
+    }
+  }
   try {
     await updateSessionPermission(currentSessionId.value, level);
     const s = sessions.value.find(s => s.sessionId === currentSessionId.value);
     if (s) s.permissionLevel = level;
-    ElMessage.success(level === "auto" ? "已切换为1级：自动同意执行命令" : "已切换为2级：执行命令需人工确认");
+    ElMessage.success(
+      level === "auto" ? "已切换为2级：自动同意执行命令"
+        : level === "unrestricted" ? "已切换为3级：完全放开，不再做任何校验"
+        : "已切换为1级：执行命令需人工确认"
+    );
   } catch (e) {
     ElMessage.error("设置权限级别失败：" + (e?.message || ""));
   }
@@ -1636,5 +1662,33 @@ onUnmounted(() => { if (abortController) abortController.abort(); });
 .session-list::-webkit-scrollbar-track,
 .bubble-list::-webkit-scrollbar-track {
   background: transparent;
+}
+</style>
+
+<!--
+  ElMessageBox.confirm() 挂载出来的 DOM 直接 append 到 <body>，脱离本组件的渲染树，
+  上面 <style scoped> 里的类选不到它，必须写在不带 scoped 的样式块里。
+-->
+<style>
+.unrestricted-confirm-box {
+  background: #ffffff !important;
+  border: 1px solid #fecaca !important;
+  border-radius: 16px !important;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15) !important;
+}
+.unrestricted-confirm-box .el-message-box__title { color: #1f2937 !important; font-weight: 600; }
+.unrestricted-confirm-box .el-message-box__message { color: #4b5563 !important; line-height: 1.7; }
+.unrestricted-confirm-box .el-message-box__status { color: #dc2626 !important; }
+.unrestricted-confirm-box .el-message-box__headerbtn .el-message-box__close { color: #9ca3af !important; }
+.unrestricted-confirm-box .el-message-box__btns .el-button {
+  background: #ffffff !important; border: 1px solid #d1d5db !important; color: #4b5563 !important;
+}
+.unrestricted-confirm-box .el-message-box__btns .el-button:hover {
+  border-color: #9ca3af !important; color: #1f2937 !important;
+}
+.unrestricted-confirm-box .el-message-box__btns .el-button--primary {
+  background: linear-gradient(135deg, #ef4444 0%, #b91c1c 100%) !important;
+  border: none !important; color: #fff !important;
+  box-shadow: 0 4px 15px rgba(239, 68, 68, 0.35) !important;
 }
 </style>

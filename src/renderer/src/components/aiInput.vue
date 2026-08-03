@@ -91,22 +91,25 @@
           popper-class="permission-dropdown-popper"
           @command="onPermissionLevelChange"
         >
-          <p class="toggle-btn permission-btn" :class="{ active: permissionLevel === 'auto' }">
+          <p class="toggle-btn permission-btn" :class="{ active: permissionLevel === 'auto', unrestricted: permissionLevel === 'unrestricted' }">
             <svg class="toggle-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <rect x="4" y="10" width="16" height="10" rx="2" />
               <path d="M8 10V7a4 4 0 0 1 8 0v3" />
             </svg>
-            {{ permissionLevel === "auto" ? "1级·自动同意" : "2级·需人工确认" }}
+            {{ permissionLevel === "auto" ? "2级·自动同意" : permissionLevel === "unrestricted" ? "3级·完全放开" : "1级·需人工确认" }}
             <el-icon class="permission-caret"><CaretBottom /></el-icon>
           </p>
           <template #dropdown>
             <el-dropdown-menu>
-              <el-dropdown-item command="auto" :class="{ 'is-active': permissionLevel === 'auto' }">
-                1级 · 自动同意执行命令
-              </el-dropdown-item>
               <el-dropdown-item command="confirm" :class="{ 'is-active': permissionLevel === 'confirm' }">
-                2级 · 需人工确认
+                1级 · 需人工确认
+              </el-dropdown-item>
+              <el-dropdown-item command="auto" :class="{ 'is-active': permissionLevel === 'auto' }">
+                2级 · 自动同意执行命令
+              </el-dropdown-item>
+              <el-dropdown-item command="unrestricted" :class="{ 'is-active': permissionLevel === 'unrestricted' }" class="unrestricted-item">
+                3级 · 完全放开（不做任何校验）
               </el-dropdown-item>
             </el-dropdown-menu>
           </template>
@@ -624,6 +627,14 @@ export default {
         &.active .permission-caret {
           color: #ffffff;
         }
+        &.unrestricted {
+          background: #fef2f2;
+          border-color: #fca5a5;
+          color: #dc2626;
+        }
+        &.unrestricted .permission-caret {
+          color: #dc2626;
+        }
       }
     }
     &-right {
@@ -819,9 +830,15 @@ export default {
   color: #4a5568 !important;
   padding: 8px 14px !important;
   white-space: nowrap !important;
+  outline: none !important;
+  box-shadow: none !important;
 }
 
-:global(.permission-dropdown-popper .el-dropdown-menu__item:hover) {
+/* :focus 必须和 :hover 一起覆盖——下拉一打开，第一项会被 Element Plus 自动键盘聚焦，
+   :hover/:focus 用的是同一个 --el-dropdown-menuItem-hover-fill 变量，只改 :hover 会漏掉这个状态，
+   露出暗色主题下未经改造的默认深色底色。 */
+:global(.permission-dropdown-popper .el-dropdown-menu__item:hover),
+:global(.permission-dropdown-popper .el-dropdown-menu__item:focus) {
   background: #f5f9ff !important;
   color: #2563eb !important;
 }
@@ -830,6 +847,21 @@ export default {
   color: #0073e5 !important;
   font-weight: 700 !important;
   background: #eaf3ff !important;
+}
+
+:global(.permission-dropdown-popper .el-dropdown-menu__item.unrestricted-item) {
+  color: #dc2626 !important;
+}
+
+:global(.permission-dropdown-popper .el-dropdown-menu__item.unrestricted-item:hover),
+:global(.permission-dropdown-popper .el-dropdown-menu__item.unrestricted-item:focus) {
+  background: #fef2f2 !important;
+  color: #dc2626 !important;
+}
+
+:global(.permission-dropdown-popper .el-dropdown-menu__item.unrestricted-item.is-active) {
+  color: #dc2626 !important;
+  background: #fef2f2 !important;
 }
 </style>
   

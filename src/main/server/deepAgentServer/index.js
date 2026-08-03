@@ -110,15 +110,18 @@ function setSessionWorkDir(sessionId, dir) {
   db.prepare(`UPDATE deep_sessions SET workDir = ? WHERE sessionId = ?`).run(dir, sessionId);
 }
 
-// 会话的命令执行审批级别：'auto'（1级，工作目录内 run_command 自动同意）/ 'confirm'（2级，默认，逐次弹窗确认）
+// 会话的命令执行审批级别：'confirm'（1级，默认，逐次弹窗确认，仍做越权校验）/
+// 'auto'（2级，工作目录内 run_command 自动同意，仍做越权校验）/
+// 'unrestricted'（3级，自动同意 + 不做任何越权/语法校验，前端切换到这一级前必须弹窗二次确认）
+const PERMISSION_LEVELS = ["auto", "confirm", "unrestricted"];
 function getSessionPermissionLevel(sessionId) {
   if (!sessionId) return "confirm";
   const row = db.prepare(`SELECT permissionLevel FROM deep_sessions WHERE sessionId = ?`).get(sessionId);
-  return row?.permissionLevel === "auto" ? "auto" : "confirm";
+  return PERMISSION_LEVELS.includes(row?.permissionLevel) ? row.permissionLevel : "confirm";
 }
 
 function setSessionPermissionLevel(sessionId, level) {
-  const normalized = level === "auto" ? "auto" : "confirm";
+  const normalized = PERMISSION_LEVELS.includes(level) ? level : "confirm";
   db.prepare(`UPDATE deep_sessions SET permissionLevel = ? WHERE sessionId = ?`).run(normalized, sessionId);
 }
 
@@ -680,7 +683,7 @@ function duplicateExecuteDecisions(runId, interruptData) {
   return decisions;
 }
 
-// 1级权限（自动同意）下，把本次中断请求全部批准；仅对 run_command 生效——
+// 2级（自动同意）/3级（完全放开）权限下，把本次中断请求全部批准；仅对 run_command 生效——
 // create_skill 固定需要人工审批，不受这个开关影响
 function autoApproveDecisions(interruptData) {
   const requests = interruptData?.value?.actionRequests || [];
@@ -923,7 +926,7 @@ async function createAgent() {
   // 命令执行工具：限定在会话工作目录内、禁止切目录/越权路径的弱隔离 run_command（详见 agentTools.js）
   // 注意：工具名不能叫 "execute"——deepagents 的 FilesystemMiddleware 保留了这个名字，
   // 非沙箱 backend 下会把任何叫这个名字的工具（包括我们自己的）从最终请求里过滤掉。
-  const { execute } = createExecuteTool({ getSessionWorkDir });
+  const { execute } = createExecuteTool({ getSessionWorkDir, getPermissionLevel: getSessionPermissionLevel });
   // 工作目录只读浏览/读取工具：不依赖命令执行开关，只要设置了工作目录就一直可用
   const { list_workdir, read_workdir_file } = createWorkdirReadTools({ getSessionWorkDir });
 
@@ -1046,7 +1049,7 @@ deepChat.put("/sessions/:sessionId/workdir", (req, res) => {
   } catch (e) { res.send(error500(e.message)); }
 });
 
-// 设置会话的命令执行审批级别：auto=1级自动同意，confirm=2级需人工确认（默认）
+// 设置会话的命令执行审批级别：confirm=1级需人工确认（默认），auto=2级自动同意，unrestricted=3级完全放开（不做越权校验）
 deepChat.put("/sessions/:sessionId/permission", (req, res) => {
   try {
     setSessionPermissionLevel(req.params.sessionId, req.body.permissionLevel);
@@ -1282,7 +1285,7 @@ deepChat.post("/chat", async (req, res) => {
   let currentTodos = null;       // 最新一次 write_todos 后的 todos 数组
   let reflectionAsked = false;   // 复盘续跑只问一次，避免死循环
   const autoStartedAt = Date.now();
-  const commandPermissionLevel = getSessionPermissionLevel(session_id); // 1级auto自动同意 / 2级confirm弹窗确认
+  const commandPermissionLevel = getSessionPermissionLevel(session_id); // 1级confirm弹窗确认 / 2级auto自动同意
 
   try {
     const agent = await getAgent();
@@ -1497,7 +1500,9 @@ deepChat.post("/chat", async (req, res) => {
               agentLog("重复命令拦截", `thread=${requestThreadId}, 已把上次执行结果返回给模型继续处理`);
               break;
             }
-            const autoDecisions = commandPermissionLevel === "auto" ? autoApproveDecisions(nodeData[0]) : null;
+            const autoDecisions = (commandPermissionLevel === "auto" || commandPermissionLevel === "unrestricted")
+              ? autoApproveDecisions(nodeData[0])
+              : null;
             if (autoDecisions) {
               autoResumedDuplicateExecute = true; // 复用同一个"静默续跑"标记
               inputMessages = new Command({ resume: { decisions: autoDecisions } });
@@ -1505,10 +1510,10 @@ deepChat.post("/chat", async (req, res) => {
                 eventType: "auto_approved",
                 round,
                 toolName: "run_command",
-                title: "已自动批准执行（1级权限）",
+                title: `已自动批准执行（${commandPermissionLevel === "unrestricted" ? "3级权限，未做越权校验" : "2级权限"}）`,
                 payload: { decisions: autoDecisions, interruptData: nodeData[0] },
               });
-              agentLog("自动批准", `thread=${requestThreadId}, 1级权限自动同意执行命令`);
+              agentLog("自动批准", `thread=${requestThreadId}, ${commandPermissionLevel === "unrestricted" ? "3级权限自动同意（未校验越权）" : "2级权限自动同意"}执行命令`);
               res.write(`data: ${JSON.stringify({ type: "tool_start", toolName: "run_command", toolAction: "auto_approved" })}\n\n`);
               if (res.flush) res.flush();
               break;
@@ -2049,7 +2054,9 @@ deepChat.post("/chat/resume", async (req, res) => {
               agentLog("重复命令拦截", `resume thread=${thread_id}, 已把上次执行结果返回给模型继续处理`);
               break;
             }
-            const autoDecisions = commandPermissionLevel === "auto" ? autoApproveDecisions(nodeData[0]) : null;
+            const autoDecisions = (commandPermissionLevel === "auto" || commandPermissionLevel === "unrestricted")
+              ? autoApproveDecisions(nodeData[0])
+              : null;
             if (autoDecisions) {
               resumeInput = new Command({ resume: { decisions: autoDecisions } });
               writeTaskTrace({
@@ -2058,10 +2065,10 @@ deepChat.post("/chat/resume", async (req, res) => {
                 threadId: thread_id,
                 eventType: "auto_approved",
                 toolName: "run_command",
-                title: "审批后已自动批准执行（1级权限）",
+                title: `审批后已自动批准执行（${commandPermissionLevel === "unrestricted" ? "3级权限，未做越权校验" : "2级权限"}）`,
                 payload: { decisions: autoDecisions, interruptData: nodeData[0] },
               });
-              agentLog("自动批准", `resume thread=${thread_id}, 1级权限自动同意执行命令`);
+              agentLog("自动批准", `resume thread=${thread_id}, ${commandPermissionLevel === "unrestricted" ? "3级权限自动同意（未校验越权）" : "2级权限自动同意"}执行命令`);
               res.write(`data: ${JSON.stringify({ type: "tool_start", toolName: "run_command", toolAction: "auto_approved" })}\n\n`);
               if (res.flush) res.flush();
               break;

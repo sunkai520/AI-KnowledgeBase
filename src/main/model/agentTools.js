@@ -270,11 +270,24 @@ const DANGEROUS_COMMAND_PATTERNS = [
   /\bcrontab\b/i, /\bsystemctl\b/i, /\bsc\s+create\b/i, /new-service/i,
 ];
 
+// 重定向符（>、>>、<）紧贴路径时（如 "echo x>..\evil.bat"，中间没有空格），真实 shell 会把
+// 操作符和后面的路径拆开单独解析，但按空白切词会把 ">.." 粘成一个 token——这个 token 不等于 ".."
+// 也不以 "../" 开头，会绕过下面的越权路径校验。这里在切词前把操作符和紧跟的内容之间插入空格，
+// 让路径部分能被切成独立 token 参与校验；只影响这里的校验逻辑，不改动传给 exec() 的原始命令。
+function normalizeShellOperatorSpacing(command) {
+  return String(command).replace(/(>>?|<)(?=\S)/g, "$1 ");
+}
+
 // 粗略按空白/引号切分命令为 token（不追求完整 shell 语法解析，够用即可）
 function tokenizeCommand(command) {
-  const matches = command.match(/"[^"]*"|'[^']*'|\S+/g) || [];
+  const matches = normalizeShellOperatorSpacing(command).match(/"[^"]*"|'[^']*'|\S+/g) || [];
   return matches.map((t) => t.replace(/^["']|["']$/g, ""));
 }
+
+// 环境变量引用 / 命令替换（%VAR%、$VAR、${VAR}、$(...)、`...`）在真实 shell 里会被展开成
+// 任意路径（比如 %APPDATA%、$HOME 展开后就是工作目录外的绝对路径），这里没法静态求值展开后的
+// 结果，与其误判成"看起来在工作目录内"而放行，不如直接拒绝——宁可误杀，不留越权口子。
+const SHELL_EXPANSION_RE = /%[A-Za-z_][A-Za-z0-9_]*%|\$\{[^}]*\}|\$\([^)]*\)|\$[A-Za-z_][A-Za-z0-9_]*|`[^`]*`/;
 
 // 空设备（黑洞）：读写都没有真实文件内容，不构成越权访问，无论平台一律放行。
 // 只白名单这两个已知的"空设备"，不包括 CON/PRN/AUX 等其他 Windows 保留设备名——那些有真实 I/O 行为，不能一概当无害处理。
@@ -301,6 +314,9 @@ export function validateConfinedCommand(command, workDir) {
   if (DANGEROUS_COMMAND_PATTERNS.some((re) => re.test(cmd))) {
     return { ok: false, reason: "命中禁止执行的高风险命令" };
   }
+  if (SHELL_EXPANSION_RE.test(cmd)) {
+    return { ok: false, reason: "命令中包含环境变量或命令替换（如 %VAR%、$VAR、$(...)、`...`），展开后的实际路径无法静态校验，已拒绝执行" };
+  }
 
   for (const token of tokenizeCommand(cmd)) {
     if (isNullDevice(token)) continue; // /dev/null、NUL 这类空设备，读写都无意义，不算越权
@@ -318,15 +334,21 @@ export function validateConfinedCommand(command, workDir) {
 
 // 创建限定工作目录的 execute 工具。getSessionWorkDir(sessionId) 由调用方注入，
 // 用于在每次调用时（通过 LangChain 透传的 config.configurable.session_id）解析出这次该用哪个目录。
-export function createExecuteTool({ getSessionWorkDir }) {
+// getPermissionLevel(sessionId) 同样每次调用时查一次（而不是建 Agent 时查一次），保证用户中途切换
+// 权限级别时立刻生效，不需要重建 Agent。level === "unrestricted"（3级）时跳过 validateConfinedCommand，
+// 命令原样丢给真实 shell 执行——这是用户在切换到该级别时已经过二次确认弹窗明确知情同意的"不设防"模式。
+export function createExecuteTool({ getSessionWorkDir, getPermissionLevel }) {
   const execute = tool(
     async ({ command }, config) => {
       const sessionId = config?.configurable?.session_id;
       const workDir = await getSessionWorkDir(sessionId);
+      const level = (await getPermissionLevel?.(sessionId)) || "confirm";
 
-      const check = validateConfinedCommand(command, workDir);
-      if (!check.ok) {
-        return `❌ 命令被拒绝：${check.reason}。当前工作目录：${workDir}`;
+      if (level !== "unrestricted") {
+        const check = validateConfinedCommand(command, workDir);
+        if (!check.ok) {
+          return `❌ 命令被拒绝：${check.reason}。当前工作目录：${workDir}`;
+        }
       }
 
       const result = await new Promise((resolve) => {

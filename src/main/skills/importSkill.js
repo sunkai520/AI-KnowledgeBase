@@ -76,6 +76,23 @@ function slugify(name) {
   return SKILL_NAME_RE.test(slug) ? slug : "imported-skill";
 }
 
+// 一批候选文件里可能有多个 SKILL.md（比如选中的技能目录内部又打包了别的子技能），
+// 必须优先取路径最短的那个（即选中目录根部的），而不是遍历顺序里第一个碰到的，
+// 否则会误把嵌套更深的子技能当成本次要导入的技能，根目录真正的 SKILL.md 反而被当杂项丢弃
+function pickRootSkillMdKey(rawFiles) {
+  let best = null;
+  let bestDepth = Infinity;
+  for (const k of Object.keys(rawFiles)) {
+    if (!/(^|\/)SKILL\.md$/i.test(k)) continue;
+    const depth = k.split("/").length;
+    if (depth < bestDepth) {
+      bestDepth = depth;
+      best = k;
+    }
+  }
+  return best;
+}
+
 function guardSafeRelPath(entryName) {
   const normalized = String(entryName).replace(/\\/g, "/");
   if (normalized.includes("..") || path.isAbsolute(normalized)) {
@@ -110,7 +127,7 @@ export function extractFilesFromZip(buffer) {
     rawFiles[name] = data;
   }
 
-  const mdKey = Object.keys(rawFiles).find((k) => /(^|\/)SKILL\.md$/i.test(k));
+  const mdKey = pickRootSkillMdKey(rawFiles);
   if (!mdKey) throw new Error("压缩包内未找到 SKILL.md");
   const rootPrefix = mdKey.slice(0, mdKey.length - "SKILL.md".length);
 
@@ -158,7 +175,7 @@ export function readFilesFromDir(dirPath) {
 
   if (Object.keys(rawFiles).length === 0) throw new Error("该文件夹为空");
 
-  const mdKey = Object.keys(rawFiles).find((k) => /(^|\/)SKILL\.md$/i.test(k));
+  const mdKey = pickRootSkillMdKey(rawFiles);
   if (!mdKey) throw new Error("该文件夹（或其子文件夹）内未找到 SKILL.md");
   const rootPrefix = mdKey.slice(0, mdKey.length - "SKILL.md".length);
 
