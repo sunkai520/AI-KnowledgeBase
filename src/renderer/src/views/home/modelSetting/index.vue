@@ -325,7 +325,7 @@ const presets = [
   { id: "moonshot",   label: "月之暗面 (Moonshot)",    baseUrl: "https://api.moonshot.cn/v1",                        hint: "如 moonshot-v1-8k" },
   { id: "zhipu",      label: "智谱 (GLM)",              baseUrl: "https://open.bigmodel.cn/api/paas/v4",              hint: "如 glm-4、embedding-3" },
   { id: "siliconflow", label: "硅基流动 (SiliconFlow)", baseUrl: "https://api.siliconflow.cn/v1",                     hint: "如 deepseek-ai/DeepSeek-V3、Qwen/Qwen2.5-72B-Instruct" },
-  { id: "sub2api",     label: "自建",           baseUrl: "http://localhost:8080/v1",                           hint: "填写你本地部署的 Sub2API 地址，模型名与上游一致" },
+  { id: "xkapi",     label: "自建",           baseUrl: "http://localhost:8080/v1",                           hint: "填写你本地部署的 xkapi 地址，模型名与上游一致" },
 ];
 
 // ── 一级切换 ──────────────────────────────────────────────────────────────
@@ -342,7 +342,7 @@ const form = reactive({
     moonshot:    { label: "月之暗面 (Moonshot)",    apiKey: "", baseUrl: "https://api.moonshot.cn/v1" },
     zhipu:       { label: "智谱 (GLM)",              apiKey: "", baseUrl: "https://open.bigmodel.cn/api/paas/v4" },
     siliconflow: { label: "硅基流动 (SiliconFlow)", apiKey: "", baseUrl: "https://api.siliconflow.cn/v1" },
-    sub2api:     { label: "自建",           apiKey: "", baseUrl: "http://localhost:8080/v1" },
+    xkapi:     { label: "自建",           apiKey: "", baseUrl: "http://localhost:8080/v1" },
   },
   chat:      { provider: "deepseek", modelName: "deepseek-v3.2", temperature: 0.7, streaming: true, contextWindow: 32000 },
   embedding: { provider: "alibaba",  modelName: "text-embedding-v4", dimensions: 1024, batchSize: 10 },

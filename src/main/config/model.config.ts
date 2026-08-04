@@ -13,7 +13,7 @@ export const PROVIDER_PRESETS: Record<string, { label: string; baseUrl: string }
   deepseek:    { label: 'DeepSeek',          baseUrl: 'https://api.deepseek.com/v1' },
   openai:      { label: 'OpenAI',            baseUrl: 'https://api.openai.com/v1' },
   siliconflow: { label: '硅基流动 (SiliconFlow)', baseUrl: 'https://api.siliconflow.cn/v1' },
-  sub2api:     { label: '自建',      baseUrl: 'http://localhost:8080/v1' },
+  xkapi:     { label: '自建',      baseUrl: 'http://localhost:8080/v1' },
 };
 
 export interface chatTs {
@@ -73,7 +73,7 @@ export const defaultConfig: ModelConfig = {
     moonshot:    { label: '月之暗面 (Moonshot)',      apiKey: '', baseUrl: 'https://api.moonshot.cn/v1' },
     zhipu:       { label: '智谱 (GLM)',               apiKey: '', baseUrl: 'https://open.bigmodel.cn/api/paas/v4' },
     siliconflow: { label: '硅基流动 (SiliconFlow)',   apiKey: '', baseUrl: 'https://api.siliconflow.cn/v1' },
-    sub2api:     { label: '自建',             apiKey: '', baseUrl: 'http://localhost:8080/v1' },
+    xkapi:     { label: '自建',             apiKey: '', baseUrl: 'http://localhost:8080/v1' },
   },
   chat: {
     provider:    'deepseek',
