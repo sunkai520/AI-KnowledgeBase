@@ -83,7 +83,6 @@ export async function parsePdf(filePath: string, onProgress?: OnPdfProgress, sig
     const pdf = await pdfjsLib.getDocument({
         data: new Uint8Array(data),
         useWorkerFetch: false,
-        isEvalSupported: false,
         useSystemFonts: true,
         cMapUrl: getPdfjsResourceUrl("cmaps"),
         cMapPacked: true,
