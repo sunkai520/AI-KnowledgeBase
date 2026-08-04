@@ -77,15 +77,23 @@ function describeAiTextError(err) {
   return raw || "写作生成失败，请稍后重试。";
 }
 
+// 样本内容如果是 PDF/Word 转出来的 Markdown，列表/段落靠换行表达语法，不能像以前那样把所有空白
+// （含换行）无差别压成一个空格——只压缩多余的空格/制表符，换行符保留，连续空行最多压成一个空行。
 function buildSamplePreview(content = "", limit = 1200) {
-  const normalized = String(content || "").replace(/\s+/g, " ").trim();
+  const normalized = String(content || "")
+    .replace(/[^\S\n]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
   if (!normalized) return "";
   if (normalized.length <= limit) return normalized;
   return `${normalized.slice(0, limit)}...`;
 }
 
 function normalizeSampleText(content = "") {
-  return String(content || "").replace(/\s+/g, " ").trim();
+  return String(content || "")
+    .replace(/[^\S\n]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 function normalizeWritingRole(role = "") {

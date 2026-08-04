@@ -7,8 +7,13 @@ const DEFAULT_TOP_K = 4;
 const INDEX_CHUNK_SIZE = 900;
 const INDEX_CHUNK_OVERLAP = 120;
 
+// 样本原文可能是 PDF/Word 转出来的 Markdown，切块前保留换行结构，chunk 边界更容易落在段落/标题这类
+// 语义完整的位置，而不是像以前那样把所有空白（含换行）拍平成一个空格，导致段落全部粘在一起。
 function normalizeText(value = "") {
-  return String(value || "").replace(/\s+/g, " ").trim();
+  return String(value || "")
+    .replace(/[^\S\n]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 function uniqueStrings(list = [], limit = 16) {

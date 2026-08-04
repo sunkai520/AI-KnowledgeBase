@@ -1,7 +1,7 @@
 // @ts-ignore
 import { success, error500 } from "../responseFn";
 import { formatDate } from "../../utils/common";
-import { doc } from "../../utils/document";
+import { doc, getFormattedMarkdown } from "../../utils/document";
 import { HumanMessage, SystemMessage } from "langchain";
 import { getDB } from "../../utils/getDb";
 import { ModelFactory } from "../../model/modelFactory";
@@ -284,7 +284,13 @@ function parsePhraseInput(value, options = {}) {
 }
 
 function buildWritingSample(content = "", limit = 1200) {
-  const normalized = String(content || "").replace(/\s+/g, " ").trim();
+  // 这个结果是直接喂给模型做写作风格分析的（见 analyzeWritingSample 调用处），样本如果是 PDF/Word 转出来的
+  // Markdown，列表/段落全靠换行表达语法，不能像以前那样把所有空白（含换行）无差别压成一个空格——
+  // 只压缩多余的空格/制表符，换行符保留，连续空行最多压成一个空行，这样 Markdown 结构不会被破坏。
+  const normalized = String(content || "")
+    .replace(/[^\S\n]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
   if (!normalized) return "";
   if (normalized.length <= limit) return normalized;
   return `${normalized.slice(0, limit)}...`;
@@ -636,6 +642,13 @@ function deleteProfileSamples(profileId) {
 }
 
 async function loadDocContent(filePath) {
+  // PDF/.docx 优先走格式保留方案，产出 Markdown（标题/加粗/列表/表格都在），喂给模型分析效果比纯文本好；
+  // 其它类型（.doc 旧格式、pptx、网页 url 等）getFormattedMarkdown 会返回 null，回退到原来的纯文本抽取。
+  const markdown = await getFormattedMarkdown(filePath);
+ console.log(markdown,"markdown");
+  
+  if (markdown) return markdown;
+
   const docObj = new doc({
     docPath: filePath,
     chunkSize: 15000,
