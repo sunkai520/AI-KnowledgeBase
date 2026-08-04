@@ -11,7 +11,8 @@ import {
   buildMultimodalContent
 } from "../../utils/common"
 import {
-  doc
+  doc,
+  getFormattedHtml
 } from "../../utils/document";
 import {
   getDB
@@ -1026,8 +1027,12 @@ textServer.post('/saveText', async (req, res) => {
           text.forEach(t => {
             str += t.pageContent
           })
-          let stmt = db.prepare(`INSERT INTO texts(fileName,title,content,size,docType,docPath,typeId,isRag,isUpload,status,createTime) values(?,?,?,?,?,?,?,?,?,?,?)`);
-          const result = stmt.run(path.fileName,title, str, path.sizeFormatted, docObj.docType, path.filePath, typeId, isRag ,isUpload, 0, formatDate(new Date().getTime()));
+          // content：展示用，优先带格式的 HTML（目前仅 word 支持），拿不到则回退纯文本
+          // markdownContent：向量化专用的干净纯文本，不受格式转换影响
+          const html = await getFormattedHtml(path.filePath);
+          const displayContent = html || str;
+          let stmt = db.prepare(`INSERT INTO texts(fileName,title,content,markdownContent,size,docType,docPath,typeId,isRag,isUpload,status,createTime) values(?,?,?,?,?,?,?,?,?,?,?,?)`);
+          const result = stmt.run(path.fileName,title, displayContent, str, path.sizeFormatted, docObj.docType, path.filePath, typeId, isRag ,isUpload, 0, formatDate(new Date().getTime()));
           if (isRag==1 && (result.lastInsertRowid !== null || result.lastInsertRowid !== undefined)) {
             // const workresult = manager.addTask({path,str,id:result.lastInsertRowid});
             // console.log(`添加任务: ${workresult.id} - ${workresult.status}`)
@@ -1038,19 +1043,21 @@ textServer.post('/saveText', async (req, res) => {
             msd: "成功"
           })
         } catch (error) {
-          reject(error)
+          // 单个文件解析失败不应让整批请求悬挂/未捕获拒绝，改为以失败结果 resolve，交给外层统一汇总
+          console.error(`解析文件失败: ${path.fileName}`, error);
+          resolve({
+            msd: "",
+            fileName: path.fileName,
+            errorMsg: error?.message || String(error)
+          })
         }
 
       })
     }))
-    let issucess = true;
-    dd.forEach(d => {
-      if (!d.msd) {
-        issucess = false
-      }
-    })
-    if (!issucess) {
-      res.send(error500('失败'))
+    const failed = dd.filter(d => !d.msd);
+    if (failed.length > 0) {
+      const detail = failed.map(f => `${f.fileName}: ${f.errorMsg}`).join('; ');
+      res.send(error500(`部分文件解析失败 - ${detail}`))
     } else {
       res.send(success(dd))
     }

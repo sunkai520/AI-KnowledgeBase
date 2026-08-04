@@ -226,7 +226,7 @@
             >
               <span>选择文件</span>
             </el-button>
-            <span style="margin-left: 10px">最多只能上传10个文件</span>
+            <span style="margin-left: 10px">仅支持上传1个文件（pdf/word/txt）</span>
           </el-form-item>
           <div
             class="fileList"
@@ -551,22 +551,8 @@ async function uploadFiles() {
   if (!res || res.length == 0) {
     return;
   }
-  if (uploadFilesArray.value.length + res.length > 10) {
-    ElMessage.warning(
-      `选择的文件过多，最多只能选择10个文件。还可选择${
-        10 - uploadFilesArray.value.length
-      }个文件!`
-    );
-    return;
-  }
-  res.forEach((item) => {
-    if (
-      uploadFilesArray.value.findIndex((f) => f.filePath === item.filePath) ===
-      -1
-    ) {
-      uploadFilesArray.value.push(item);
-    }
-  });
+  // 单篇上传：新选择的文件直接替换掉之前选择的文件
+  uploadFilesArray.value = [res[0]];
   console.log(uploadFilesArray.value, ":rrrrr");
 }
 // 添加鼠标跟随发光效果

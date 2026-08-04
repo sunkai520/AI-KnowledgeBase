@@ -155,10 +155,9 @@ export async function selectFile(event) {
     let win: any = BrowserWindow.fromWebContents(event.sender);
     const result: any = await dialog.showOpenDialog(win, {
         title: "选择文件",
-        properties: ["openFile", "multiSelections"],
+        properties: ["openFile"],
         filters: [
-            { name: "Documents", extensions: ["pdf", "docx", "ppt","pptx","txt", "png", "jpg", "jpeg"] },
-            { name: "All Files", extensions: ["*"] },
+            { name: "Documents", extensions: ["pdf", "doc", "docx", "txt"] },
         ],
     });
 
