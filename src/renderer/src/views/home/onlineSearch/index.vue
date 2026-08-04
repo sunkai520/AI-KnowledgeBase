@@ -218,7 +218,7 @@ const engines = [
     name: "Google",
     icon: "G",
     color: "#2563eb",
-    url: "https://www.google.com",
+    url: "https://www.google.com/",
     proxy: true,
   },
   {
@@ -226,7 +226,7 @@ const engines = [
     name: "Bing",
     icon: "B",
     color: "#0f766e",
-    url: "https://www.bing.com",
+    url: "https://www.bing.com/",
     proxy: true,
   },
   {
@@ -234,7 +234,7 @@ const engines = [
     name: "百度",
     icon: "百",
     color: "#1d4ed8",
-    url: "https://www.baidu.com",
+    url: "https://www.baidu.com/",
     proxy: false,
   },
   {
@@ -242,7 +242,7 @@ const engines = [
     name: "DuckDuckGo",
     icon: "D",
     color: "#de5833",
-    url: "https://duckduckgo.com",
+    url: "https://duckduckgo.com/",
     proxy: true,
   },
   {
@@ -250,7 +250,7 @@ const engines = [
     name: "搜狗",
     icon: "狗",
     color: "#f97316",
-    url: "https://www.sogou.com",
+    url: "https://www.sogou.com/",
     proxy: false,
   },
 ];
