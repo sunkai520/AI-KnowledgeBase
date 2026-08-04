@@ -67,6 +67,7 @@
     "node-machine-id": "^1.1.12",
     "officeparser": "^4.2.0",
     "pdf-parse": "^1.1.1",
+    "pdfjs-dist": "^6.2.108",
     "playwright": "^1.58.2",
     "postcss-pxtorem": "5.1.1",
     "puppeteer-core": "^24.36.1",
