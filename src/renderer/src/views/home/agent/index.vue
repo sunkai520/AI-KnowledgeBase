@@ -331,6 +331,8 @@ const TOOL_NAMES = {
   generateWord:   '生成文档',
   generate_image:              '文生图',
   generate_video_from_image:   '图生视频',
+  generate_video_from_frames:  '首尾帧生视频',
+  generate_video_from_references: '参考生视频',
   compose_video:               '视频合成',
   extract_video_last_frame:    '截取末帧',
   write_todos:      '更新任务清单',

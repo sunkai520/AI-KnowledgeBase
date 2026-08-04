@@ -12,7 +12,14 @@ import { setLog } from "../../event/index";
 import { Command } from "@langchain/langgraph";
 import { browser, clearBrowserFailureTracker, clearOpenUrlAttemptTracker } from "../../model/browserTools";
 import { generateWordTool, searchLocalKB } from "../../model/tools";
-import { generateImageTool, generateVideoFromImageTool, composeVideoTool, extractLastFrameTool } from "../../model/mediaTools";
+import {
+  generateImageTool,
+  generateVideoFromImageTool,
+  generateVideoFromFramesTool,
+  generateVideoFromReferencesTool,
+  composeVideoTool,
+  extractLastFrameTool,
+} from "../../model/mediaTools";
 import { getDB } from "../../utils/getDb";
 import { processMemoryExtraction, retrieveRelevantMemories } from "../../model/memoryExtractor";
 import {
@@ -43,6 +50,8 @@ const deepChat = express.Router();
 const MEDIA_RESULT_TOOLS = {
   generate_image: "image",
   generate_video_from_image: "video",
+  generate_video_from_frames: "video",
+  generate_video_from_references: "video",
   compose_video: "video",
   extract_video_last_frame: "image",
 };
@@ -940,6 +949,8 @@ async function createAgent() {
     generateWordTool,
     generateImageTool,
     generateVideoFromImageTool,
+    generateVideoFromFramesTool,
+    generateVideoFromReferencesTool,
     composeVideoTool,
     extractLastFrameTool,
     create_skill,
@@ -1374,7 +1385,7 @@ deepChat.post("/chat", async (req, res) => {
     // 只能瞎编一个文件名，必然在 resolveLocalMediaPath 里报"素材文件不存在"。这里把真实路径写进文本，
     // 模型才有东西可以原样传给这个工具（resolveLocalMediaPath 本身已支持本地绝对路径，不需要额外处理）。
     if (imagePaths.length > 0) {
-      userText += `\n\n[本次上传的图片文件路径：${imagePaths.map((p, i) => `图片${i + 1}：${p}`).join("；")}]（如果需要基于这些图片生成视频，直接把对应路径作为 generate_video_from_image 的 imagePath 参数，不需要先调用 generate_image）`;
+      userText += `\n\n[本次上传的图片文件路径：${imagePaths.map((p, i) => `图片${i + 1}：${p}`).join("；")}]（如果只需要基于其中一张图生成视频，直接把对应路径作为 generate_video_from_image 的 imagePath 参数；如果要用起始+结束两张图生成过渡视频，用 generate_video_from_frames；如果要把多张图的元素融合进同一段视频，用 generate_video_from_references；都不需要先调用 generate_image）`;
     }
 
     const userContent = buildMultimodalContent(userText, imagePaths);

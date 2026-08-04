@@ -153,10 +153,10 @@ function normalizeImageSizeV2(size) {
 
 // wan2.6-i2v-flash 的 duration 取值范围是 [2, 15] 整数秒，不传则模型按自己的默认值（5秒）生成——
 // 之前代码就是完全没传这个字段，导致用户说要多少秒完全不生效。这里做个容错裁剪，越界值夹到边界而不是报错。
-function normalizeDuration(duration) {
+function normalizeDuration(duration, min = 2, max = 15) {
   const n = Math.round(Number(duration));
   if (!Number.isFinite(n)) return undefined;
-  return Math.min(15, Math.max(2, n));
+  return Math.min(max, Math.max(min, n));
 }
 
 // 文生图
@@ -200,6 +200,54 @@ export async function generateVideoFromImage({ imagePath, prompt, duration }) {
     `${DASHSCOPE_BASE}/services/aigc/video-generation/video-synthesis`,
     apiKey,
     { model, input: { img_url: imgDataUri, prompt: prompt || "" }, parameters }
+  );
+  const output = await pollTask(taskId, apiKey, { intervalMs: 5000, maxWaitMs: 300000 });
+  const remoteUrl = output.video_url || output.results?.[0]?.url;
+  if (!remoteUrl) throw new Error(`未获取到生成结果：${JSON.stringify(output)}`);
+  return downloadToUploads(remoteUrl, `${GENERATED_DIR}/videos`, "mp4");
+}
+
+// 首尾帧生视频：给定起始画面 + 结束画面各一张图，模型生成两者之间的过渡视频。
+// 用官方文档只说明支持公网URL/oss://，没提base64 data URI；这里先按 img_url 同款套路转 base64 试，
+// 是因为它和 generateVideoFromImage 共享同一套 DashScope 网关（虽然端点路径不同），实测若不认再改成走文件上传拿 oss:// 地址。
+export async function generateVideoFromFirstLastFrame({ firstImagePath, lastImagePath, prompt, duration }) {
+  const { apiKey, media } = getMediaAuth();
+  const model = media.kf2vModel || "wan2.2-kf2v-flash";
+  const [firstDataUri, lastDataUri] = await Promise.all([
+    imageToBase64DataUri(firstImagePath),
+    imageToBase64DataUri(lastImagePath),
+  ]);
+  const parameters = { resolution: "720P" };
+  const dur = normalizeDuration(duration);
+  if (dur) parameters.duration = dur;
+  const taskId = await submitTask(
+    `${DASHSCOPE_BASE}/services/aigc/image2video/video-synthesis`,
+    apiKey,
+    { model, input: { first_frame_url: firstDataUri, last_frame_url: lastDataUri, prompt: prompt || "" }, parameters }
+  );
+  const output = await pollTask(taskId, apiKey, { intervalMs: 5000, maxWaitMs: 300000 });
+  const remoteUrl = output.video_url || output.results?.[0]?.url;
+  if (!remoteUrl) throw new Error(`未获取到生成结果：${JSON.stringify(output)}`);
+  return downloadToUploads(remoteUrl, `${GENERATED_DIR}/videos`, "mp4");
+}
+
+// 参考生视频：最多传5张参考图（角色/场景/道具等），模型把这些元素融合进同一段视频。
+// prompt 里用 character1、character2...按传入顺序指代对应第几张参考图。
+// duration 范围和 i2v-flash 不一样（官方文档给的是 [2,10]），单独裁剪。
+export async function generateVideoFromReferences({ imagePaths, prompt, duration }) {
+  const { apiKey, media } = getMediaAuth();
+  const model = media.r2vModel || "wan2.6-r2v-flash";
+  const list = Array.isArray(imagePaths) ? imagePaths : [];
+  if (list.length < 1) throw new Error("至少需要传入1张参考图");
+  if (list.length > 5) throw new Error("参考图最多支持5张");
+  const referenceUrls = await Promise.all(list.map((p) => imageToBase64DataUri(p)));
+  const parameters = { size: "1280*720", audio: false };
+  const dur = normalizeDuration(duration, 2, 10);
+  if (dur) parameters.duration = dur;
+  const taskId = await submitTask(
+    `${DASHSCOPE_BASE}/services/aigc/video-generation/video-synthesis`,
+    apiKey,
+    { model, input: { reference_urls: referenceUrls, prompt: prompt || "" }, parameters }
   );
   const output = await pollTask(taskId, apiKey, { intervalMs: 5000, maxWaitMs: 300000 });
   const remoteUrl = output.video_url || output.results?.[0]?.url;
