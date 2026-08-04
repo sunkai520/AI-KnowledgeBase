@@ -15,6 +15,9 @@ import {
   getFormattedHtml
 } from "../../utils/document";
 import {
+  parsePdf
+} from "../../utils/pdfParser";
+import {
   getDB
 } from "../../utils/getDb";
 import {
@@ -36,6 +39,9 @@ import { searchProfileWritingSamples } from "../writeStyleServer/profileSampleSe
 import path from "path";
 const db = new Proxy({}, { get: (_, prop) => getDB().db[prop] });
 const express = require('express');
+// id(字符串) -> AbortController：记录正在后台解析/向量化的知识库文件，删除时用来通知任务尽快停下来，
+// 避免删除之后任务还在跑、甚至把向量数据在删除之后又重新写回去
+const activeProcessing = new Map();
 const manager = ElectronTaskManager.getInstance()
 // 初始化：3 个并发 Worker
 const workerPath = path.join(__dirname, 'workers', 'text-worker.js')
@@ -919,6 +925,14 @@ textServer.get('/delText', (req, res) => {
   if (!id) {
     res.send(error500('id不能为空'));
   }
+  // 这条记录如果还在后台解析/向量化，先通知它取消，让它在下一个检查点尽快停下来，
+  // 不然任务还在跑，删完之后向量数据可能又被写回去
+  const controller = activeProcessing.get(String(id));
+  if (controller) {
+    controller.abort();
+    activeProcessing.delete(String(id));
+    console.log(`记录 ${id} 处理中被删除，已通知后台任务取消`);
+  }
   const transaction = db.transaction(() => {
     // 1. 删除子表中的文本记录
     db.prepare('DELETE FROM texts WHERE id = ?').run(id);
@@ -1012,55 +1026,45 @@ textServer.post('/saveText', async (req, res) => {
   // 文件上传方式处理
   if (isUpload == 1) {
     if (!filePaths || filePaths.length == 0) {
-      res.send(error500('filePaths不能为空'));
+      return res.send(error500('filePaths不能为空'));
     }
-    let dd = await Promise.all(filePaths.map(async path => {
-      return new Promise(async (resolve, reject) => {
-        try {
-          let docObj = new doc({
-            docPath: path.filePath,
-            chunkSize: KB_CHUNK_SIZE,
-            chunkOverlap: KB_CHUNK_OVERLAP
-          });
-          let text = await docObj.loader.load();
-          let str = ""
-          text.forEach(t => {
-            str += t.pageContent
-          })
-          // content：展示用，优先带格式的 HTML（目前仅 word 支持），拿不到则回退纯文本
-          // markdownContent：向量化专用的干净纯文本，不受格式转换影响
-          const html = await getFormattedHtml(path.filePath);
-          const displayContent = html || str;
-          let stmt = db.prepare(`INSERT INTO texts(fileName,title,content,markdownContent,size,docType,docPath,typeId,isRag,isUpload,status,createTime) values(?,?,?,?,?,?,?,?,?,?,?,?)`);
-          const result = stmt.run(path.fileName,title, displayContent, str, path.sizeFormatted, docObj.docType, path.filePath, typeId, isRag ,isUpload, 0, formatDate(new Date().getTime()));
-          if (isRag==1 && (result.lastInsertRowid !== null || result.lastInsertRowid !== undefined)) {
-            // const workresult = manager.addTask({path,str,id:result.lastInsertRowid});
-            // console.log(`添加任务: ${workresult.id} - ${workresult.status}`)
-            // await new Promise(r => setTimeout(r, 200)) // 稍微错开添加时间
-            handelText(str, result.lastInsertRowid, docObj)
-          }
-          resolve({
-            msd: "成功"
-          })
-        } catch (error) {
-          // 单个文件解析失败不应让整批请求悬挂/未捕获拒绝，改为以失败结果 resolve，交给外层统一汇总
-          console.error(`解析文件失败: ${path.fileName}`, error);
-          resolve({
-            msd: "",
-            fileName: path.fileName,
-            errorMsg: error?.message || String(error)
-          })
-        }
+    // 先给每个文件插入一条"处理中"占位记录并立刻返回，真正的解析（PDF 多页 + 视觉模型识别耗时明显）
+    // 和向量化放到后台异步跑，避免前端长时间转圈等待、甚至撞上 axios 5 分钟超时。
+    // 构造 doc 实例这一步是同步的，文件类型不支持时会在这里直接抛错，逐个 try/catch 保证一个文件的
+    // 类型错误不影响同批次其他文件。
+    const inserted = [];
+    const immediateFailed = [];
+    for (const path of filePaths) {
+      try {
+        const docObj = new doc({
+          docPath: path.filePath,
+          chunkSize: KB_CHUNK_SIZE,
+          chunkOverlap: KB_CHUNK_OVERLAP
+        });
+        let stmt = db.prepare(`INSERT INTO texts(fileName,title,content,markdownContent,size,docType,docPath,typeId,isRag,isUpload,status,process,createTime) values(?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+        const result = stmt.run(path.fileName, title, "", "", path.sizeFormatted, docObj.docType, path.filePath, typeId, isRag, isUpload, 2, 0, formatDate(new Date().getTime()));
+        inserted.push({ id: result.lastInsertRowid, path, docObj });
+      } catch (error) {
+        console.error(`解析文件失败: ${path.fileName}`, error);
+        immediateFailed.push({ fileName: path.fileName, errorMsg: error?.message || String(error) });
+      }
+    }
+    if (inserted.length === 0) {
+      const detail = immediateFailed.map(f => `${f.fileName}: ${f.errorMsg}`).join('; ');
+      return res.send(error500(`文件解析失败 - ${detail}`));
+    }
+    res.send(success({
+      inserted: inserted.map(i => ({ id: i.id, fileName: i.path.fileName })),
+      failed: immediateFailed
+    }));
 
-      })
-    }))
-    const failed = dd.filter(d => !d.msd);
-    if (failed.length > 0) {
-      const detail = failed.map(f => `${f.fileName}: ${f.errorMsg}`).join('; ');
-      res.send(error500(`部分文件解析失败 - ${detail}`))
-    } else {
-      res.send(success(dd))
-    }
+    // 响应已经发出去了，后面全部是后台处理，不阻塞请求
+    inserted.forEach(({ id, path, docObj }) => {
+      processUploadedFile(id, path, docObj, isRag).catch(error => {
+        console.error(`处理文件失败: ${path.fileName}`, error);
+        db.prepare(`UPDATE texts SET status = 0 WHERE id = ?`).run(id);
+      });
+    });
   }else{
     let stmt = db.prepare(`INSERT INTO texts(title,content,docType,typeId,isRag,isUpload,status,createTime) values(?,?,?,?,?,?,?,?)`);
     let status = 0;
@@ -1071,20 +1075,81 @@ textServer.post('/saveText', async (req, res) => {
     res.send(success(result))
   }
 })
-async function handelText(text, id, docObj) {
+// 占位记录插入之后，真正做解析（PDF 逐页抽文字/视觉识别，其它类型走 loader）+ 更新展示内容和向量化，
+// 全程通过 process/status 更新进度，前端轮询 /textList 就能看到实时百分比。
+async function processUploadedFile(id, path, docObj, isRag) {
+  const controller = new AbortController();
+  activeProcessing.set(String(id), controller);
+  try {
+    const progressStmt = db.prepare(`UPDATE texts SET process = ?, status = ? WHERE id = ?`);
+    let str = "";
+    let displayContent = "";
+    if (docObj.docType === 'pdf') {
+      // 解析阶段进度占 0-90%，剩下 10% 留给向量化前的收尾；向量化阶段的进度由 handelText 自己接着写
+      const parsed = await parsePdf(path.filePath, (page, total) => {
+        const pct = Math.min(90, Math.round((page / total) * 90));
+        progressStmt.run(pct, 2, id);
+      }, controller.signal);
+      str = parsed.text;
+      displayContent = parsed.html;
+    } else {
+      let text = await docObj.loader.load();
+      text.forEach(t => {
+        str += t.pageContent
+      })
+      // content：展示用，优先带格式的 HTML（目前仅 word 支持），拿不到则回退纯文本
+      // markdownContent：向量化专用的干净纯文本，不受格式转换影响
+      const html = await getFormattedHtml(path.filePath);
+      displayContent = html || str;
+    }
+
+    if (controller.signal.aborted) {
+      console.log(`记录 ${id} 已在解析过程中被删除，放弃写入解析结果`);
+      return;
+    }
+    db.prepare(`UPDATE texts SET content = ?, markdownContent = ?, process = ? WHERE id = ?`)
+      .run(displayContent, str, 90, id);
+
+    if (isRag == 1) {
+      if (!str) {
+        // handelText 内部靠 `if (text && id)` 判断要不要跑，text 是空字符串时整个函数体会被跳过、
+        // 永远不会把 status/process 写到终态，记录会永远停在"处理中 90%"。这里提前拦一道，
+        // 明确标记失败并说明原因，而不是让它卡死。
+        console.error(`记录 ${id} 解析结果为空文本，无法向量化: ${path.fileName}`);
+        progressStmt.run(0, 0, id);
+      } else {
+        await handelText(str, id, docObj, controller.signal);
+      }
+    } else {
+      progressStmt.run(100, 1, id);
+    }
+  } finally {
+    activeProcessing.delete(String(id));
+  }
+}
+async function handelText(text, id, docObj, signal) {
   let updateStmt = db.prepare(`UPDATE texts SET process = ?,status=? WHERE id = ?`);
   try {
     if (text && id) {
+      // signal 只在文件上传后台处理这条路径上会传（对应删除时可能触发取消）；编辑页重新向量化那两处
+      // 调用没传 signal，undefined?.aborted 恒为 false，行为跟之前完全一样
+      if (signal?.aborted) return;
       let embdingModel = ModelFactory.getEmbeddingModel();
       const vectorDb = getDB();
       updateStmt.run(10, 2, id);
       let texts = await docObj.textSplitter.splitText(text);
+      if (signal?.aborted) return;
       updateStmt.run(50, 2, id);
       let vectors = await embdingModel.embedDocuments(texts);
+      if (signal?.aborted) return;
       updateStmt.run(60, 2, id);
       for (let i = 0; i < vectors.length; i++) {
+        // 逐条检查：即使已经拿到了全部 embedding 结果，中途被取消也不再继续写入向量库，
+        // 避免删除记录之后向量数据又被写回去
+        if (signal?.aborted) return;
         vectorDb.insert(vectors[i], texts[i], id)
       }
+      if (signal?.aborted) return;
       vectorDb.quantize();
       updateStmt.run(100, 1, id);
     }

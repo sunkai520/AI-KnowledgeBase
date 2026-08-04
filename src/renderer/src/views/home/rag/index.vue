@@ -78,9 +78,9 @@
                         >向量化成功</el-tag
                       >
                       <el-tag type="primary" v-else-if="article.status == 2"
-                        >向量化中</el-tag
+                        >处理中 {{ article.process || 0 }}%</el-tag
                       >
-                      <el-tag type="danger" v-else>向量化失败</el-tag>
+                      <el-tag type="danger" v-else>处理失败</el-tag>
                     </div>
                   </div>
                 </div>
@@ -310,7 +310,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, onUnmounted } from "vue";
 import {
   Plus,
   Edit,
@@ -395,22 +395,37 @@ function seeDetail(d) {
     },
   });
 }
-async function getTableList() {
+// 上传的文件（尤其是多页 PDF）解析+向量化放到了后台跑，这里靠轮询把 status/process 刷新出来，
+// silent=true 时不触发整块 v-loading，避免后台轮询期间列表一直闪烁
+let pollTimer = null;
+async function getTableList(silent = false) {
   let params = {
     page: pageConfig.page,
     pageSize: pageConfig.pageSize,
     keyWord: keyWord.value,
     typeId: sTypeId.value,
   };
-  tableLoading.value = true;
-  let res = await textList(params)
-    .finally(() => {})
-    .finally(() => {
-      tableLoading.value = false;
-    });
+  if (!silent) tableLoading.value = true;
+  let res = await textList(params).finally(() => {
+    if (!silent) tableLoading.value = false;
+  });
   articles.value = res.data.list;
   pageConfig.total = res.data.total;
+  schedulePoll();
 }
+function schedulePoll() {
+  if (pollTimer) {
+    clearTimeout(pollTimer);
+    pollTimer = null;
+  }
+  const hasProcessing = articles.value.some((a) => a.isRag != 2 && a.status == 2);
+  if (hasProcessing) {
+    pollTimer = setTimeout(() => getTableList(true), 3000);
+  }
+}
+onUnmounted(() => {
+  if (pollTimer) clearTimeout(pollTimer);
+});
 let inputChange = debounce(() => {
   pageConfig.page = 1;
   getTableList();
@@ -490,11 +505,22 @@ const handleSave = async (tp) => {
             ...form.value,
             filePaths: uploadFilesArray.value,
           };
+          // 后端现在是"插入占位记录就立刻返回，解析+向量化在后台跑"，这里拿到的只是"已提交"，
+          // 不代表已经解析完成，实际进度靠 getTableList 里的轮询去刷新
           let res = await saveText(params).finally(() => {
             saving.value = false;
             dialogVisible.value = false;
           });
-          ElMessage.success("保存成功");
+          const failed = res?.data?.failed || [];
+          if (failed.length > 0) {
+            ElMessage.warning(
+              `已提交，正在解析中；其中 ${failed.length} 个文件类型不支持：${failed
+                .map((f) => f.fileName)
+                .join("、")}`
+            );
+          } else {
+            ElMessage.success("已提交，正在后台解析");
+          }
           getTableList();
           console.log(params, "ssss");
         } else {
