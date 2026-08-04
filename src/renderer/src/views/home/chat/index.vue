@@ -471,7 +471,9 @@ async function handleSend(data) {
         }
         abortController = null;
         generatingChat = null;
-        if (isStillViewing()) scrollBottom(true);
+        // 和流式过程中每个 chunk 一样，只在用户本来就停留在底部时才跟随滚动，
+        // 避免用户往上翻看历史时被 AI 说完话硬拽回底部
+        if (isStillViewing()) scrollBottom();
         break;
       }
 
