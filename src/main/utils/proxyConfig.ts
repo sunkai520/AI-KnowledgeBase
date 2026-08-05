@@ -35,13 +35,42 @@ export function getEffectiveProxyMode(settings: AppSettings): ProxyMode {
   return normalizeProxyMode(settings.proxyMode);
 }
 
+// session.closeAllConnections() 会终止该 session 下所有「正在进行中」的请求，不只是清空闲置连接池
+// （Electron 官方文档原话）。持久化分区（如 persist:ai-search）在多次调用间是同一个 Session 对象，
+// 如果每次 newPage() 都无条件重新 setProxy + closeAllConnections，一旦短时间内有第二次调用命中
+// 同一分区，就会把第一次调用「正在进行中」的请求直接掐断（表现为 net::ERR_CONNECTION_CLOSED），
+// 而代理本身其实完全正常。这里按 Session 缓存「上次实际生效的代理配置签名」，配置没变就跳过
+// setProxy/closeAllConnections，只有真的变了（用户改了代理设置、或调用方传了不同的显式代理）才重新应用。
+const lastAppliedProxySignature = new WeakMap<Session, string>();
+
 export async function applyProxyToSession(
   targetSession: Session,
   options: { explicitProxy?: string; forceDirect?: boolean; proxyMode?: ProxyMode } = {},
 ): Promise<AppliedProxyState> {
-  if (options.forceDirect) {
+  const target = resolveTargetProxyState(options);
+  const signature = JSON.stringify(target);
+
+  if (lastAppliedProxySignature.get(targetSession) === signature) {
+    return target;
+  }
+
+  if (target.mode === 'pac') {
+    await targetSession.setProxy({ mode: 'pac_script', pacScript: target.pacScript });
+  } else if (target.mode === 'proxy') {
+    await targetSession.setProxy({ proxyRules: target.proxyUrl, proxyBypassRules: '<-loopback>' });
+  } else {
     await targetSession.setProxy({ mode: 'direct' });
-    await closeSessionConnections(targetSession);
+  }
+  await closeSessionConnections(targetSession);
+  lastAppliedProxySignature.set(targetSession, signature);
+  return target;
+}
+
+/** 根据显式参数 / 全局设置，算出这次应该生效的代理状态（纯计算，不产生副作用） */
+function resolveTargetProxyState(
+  options: { explicitProxy?: string; forceDirect?: boolean; proxyMode?: ProxyMode },
+): AppliedProxyState {
+  if (options.forceDirect) {
     return { mode: 'direct', proxyMode: 'direct', proxyUrl: '' };
   }
 
@@ -49,17 +78,8 @@ export async function applyProxyToSession(
   if (explicitProxy) {
     const explicitMode = normalizeProxyMode(options.proxyMode);
     if (explicitMode === 'pac') {
-      const pacScript = ensurePacFile(explicitProxy);
-      await targetSession.setProxy({ mode: 'pac_script', pacScript });
-      await closeSessionConnections(targetSession);
-      return { mode: 'pac', proxyMode: 'pac', proxyUrl: explicitProxy, pacScript };
+      return { mode: 'pac', proxyMode: 'pac', proxyUrl: explicitProxy, pacScript: ensurePacFile(explicitProxy) };
     }
-
-    await targetSession.setProxy({
-      proxyRules: explicitProxy,
-      proxyBypassRules: '<-loopback>',
-    });
-    await closeSessionConnections(targetSession);
     return { mode: 'proxy', proxyMode: 'global', proxyUrl: explicitProxy };
   }
 
@@ -68,23 +88,11 @@ export async function applyProxyToSession(
   const proxyUrl = String(settings.proxyUrl || '').trim();
 
   if (proxyMode === 'direct' || !proxyUrl) {
-    await targetSession.setProxy({ mode: 'direct' });
-    await closeSessionConnections(targetSession);
     return { mode: 'direct', proxyMode: 'direct', proxyUrl: '' };
   }
-
   if (proxyMode === 'pac') {
-    const pacScript = ensurePacFile(proxyUrl);
-    await targetSession.setProxy({ mode: 'pac_script', pacScript });
-    await closeSessionConnections(targetSession);
-    return { mode: 'pac', proxyMode: 'pac', proxyUrl, pacScript };
+    return { mode: 'pac', proxyMode: 'pac', proxyUrl, pacScript: ensurePacFile(proxyUrl) };
   }
-
-  await targetSession.setProxy({
-    proxyRules: proxyUrl,
-    proxyBypassRules: '<-loopback>',
-  });
-  await closeSessionConnections(targetSession);
   return { mode: 'proxy', proxyMode: 'global', proxyUrl };
 }
 
