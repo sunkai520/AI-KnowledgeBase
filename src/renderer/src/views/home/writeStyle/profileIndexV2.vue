@@ -577,7 +577,7 @@
                 选择样本文件
               </el-button>
               <div class="upload-tip">
-                支持 `pdf`、`txt`、`docx`、`doc`、`pptx`。每次追加一个样本文件，如需追加多个请重复"增加样本"。
+                支持 `pdf`、`txt`、`docx`、`doc`每次追加一个样本文件，如需追加多个请重复"增加样本"。
               </div>
             </div>
             <div v-if="sampleForm.filePaths.length" class="file-list">
