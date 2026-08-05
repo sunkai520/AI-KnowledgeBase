@@ -1547,6 +1547,8 @@ onUnmounted(() => { if (abortController) abortController.abort(); });
     margin-right: 0;
     color: blue;
     font-weight: 600;
+    white-space: pre-wrap;
+    word-break: break-word;
   }
 }
 
