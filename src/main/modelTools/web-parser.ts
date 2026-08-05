@@ -4,7 +4,7 @@ import TurndownService from 'turndown';
 import * as turndownPluginGfm from 'turndown-plugin-gfm';
 import * as cheerio from 'cheerio';
 import { browserManager } from '../utils/browserManager';
-import { detectBlocked, escalateToVisibleForManualSolve } from '../utils/antiBot';
+import { detectBlocked } from '../utils/antiBot';
 
 // 和 search-engine.ts 保持一致的伪装 UA：Electron 默认 UA 带 "Electron/x.y.z"，很容易被反爬识别拦截
 const DESKTOP_UA =
@@ -120,29 +120,16 @@ export async function parsePage(
     let finalUrl = page.url();
     let html = await page.content();
 
-    // 命中验证码/安全验证拦截：可选升级为可见窗口等待人工处理
+    // 命中验证码/安全验证拦截：人工处理弹窗已禁用，直接判定失败
     if (detectBlocked(finalUrl, html)) {
-      let solved = false;
-      if (opts.allowEscalate) {
-        console.warn(`[WebParser] 疑似触发反爬验证，弹出可见窗口等待手动处理...`);
-        solved = await escalateToVisibleForManualSolve(finalUrl, opts.partition!, opts.proxy, undefined);
-        if (solved) {
-          await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {});
-          await waitForContentStable(page, opts.waitTime ?? 3000);
-          finalUrl = page.url();
-          html = await page.content();
-        }
-      }
-      if (!solved || detectBlocked(finalUrl, html)) {
-        return {
-          success: false,
-          url: targetUrl,
-          title: '',
-          markdown: '',
-          links: [],
-          error: opts.allowEscalate ? '触发反爬验证，人工处理未通过或超时' : '触发反爬验证，未获取到内容'
-        };
-      }
+      return {
+        success: false,
+        url: targetUrl,
+        title: '',
+        markdown: '',
+        links: [],
+        error: '触发反爬验证，未获取到内容'
+      };
     }
 
     let title = await page.title();

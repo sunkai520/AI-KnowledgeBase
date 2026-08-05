@@ -4,7 +4,7 @@ import * as cheerio from 'cheerio';
 import { browserManager } from '../utils/browserManager';
 import { parsePage, extractUrls, ParseResult } from './web-parser';
 import { shouldForceDirectForSearchEngine } from '../utils/proxyConfig';
-import { detectBlocked, escalateToVisibleForManualSolve } from '../utils/antiBot';
+import { detectBlocked } from '../utils/antiBot';
 
 export interface SearchResult {
     title: string;
@@ -133,41 +133,19 @@ export async function webSearch({
         let html = await page.content();
         console.log(`[Search] HTML长度: ${html.length}, 片段: ${html.slice(0, 300).replace(/\s+/g, ' ')}`);
 
-        // 验证码/安全验证检测：先弹出可见窗口（同一持久化分区）让用户手动处理一次，
-        // 处理完这个分区就被信任了，后续无头搜索大概率不会再触发
+        // 验证码/安全验证检测：人工处理弹窗已禁用，命中后不再弹可见窗口，直接判定失败并建议切换引擎
         if (detectBlocked(finalUrl, html)) {
-            console.warn(`[Search] ${opts.engine} 触发安全验证，弹出可见窗口等待手动处理...`);
-            const solved = await escalateToVisibleForManualSolve(finalUrl, opts.partition, opts.proxy, forceDirect);
-
-            if (solved) {
-                console.log(`[Search] 验证已手动处理，重新加载搜索页...`);
-                try {
-                    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-                    if (waitSelector) {
-                        await page.waitForSelector(waitSelector, { timeout: opts.waitTime }).catch(() => {});
-                    }
-                } catch (e: any) {
-                    console.warn(`[Search] 手动处理后重新加载失败: ${e.message}`);
-                }
-                finalUrl = page.url();
-                html = await page.content();
-            }
-
-            if (!solved || detectBlocked(finalUrl, html)) {
-                // bing 优先级调到最低：只有 baidu/sogou/google/duckduckgo 都失败后才轮到它兜底
-                const fallbackChain: Record<string, string> = {
-                    baidu: 'sogou',
-                    sogou: 'google',
-                    google: 'duckduckgo',
-                    duckduckgo: 'bing',
-                    bing: 'baidu'
-                };
-                const suggest = fallbackChain[opts.engine] || 'baidu';
-                const reason = solved ? '手动处理后仍未通过验证' : '等待手动处理超时';
-                const msg = `${opts.engine} 搜索触发了安全验证（验证码），${reason}，本次未获取到结果。请改用 ${suggest} 搜索引擎重试：调用本工具时把 engine 参数设为 "${suggest}"。`;
-                console.warn(`[Search] ${msg}`);
-                return { success: false, query, results: [], error: msg };
-            }
+            const fallbackChain: Record<string, string> = {
+                baidu: 'sogou',
+                sogou: 'google',
+                google: 'duckduckgo',
+                duckduckgo: 'bing',
+                bing: 'baidu'
+            };
+            const suggest = fallbackChain[opts.engine] || 'baidu';
+            const msg = `${opts.engine} 搜索触发了安全验证（验证码），本次未获取到结果。请改用 ${suggest} 搜索引擎重试：调用本工具时把 engine 参数设为 "${suggest}"。`;
+            console.warn(`[Search] ${msg}`);
+            return { success: false, query, results: [], error: msg };
         }
 
         let results = parseSearchResults(html, opts.engine, opts.limit);
