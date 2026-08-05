@@ -1643,6 +1643,7 @@ onUnmounted(() => {
   border-radius: 8px;
   overflow: hidden;
   background: #f8fafc;
+  width: 800px;
 }
 
 .pr-header {

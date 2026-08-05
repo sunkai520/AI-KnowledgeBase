@@ -813,6 +813,7 @@ onMounted(() => {
   border-radius: 8px;
   overflow: hidden;
   background: #f8fafc;
+  width: 800px;
 }
 .pr-header {
   padding: 8px 12px;

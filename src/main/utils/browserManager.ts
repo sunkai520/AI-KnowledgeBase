@@ -16,6 +16,24 @@ export class BrowserManager {
   private idlePool: { page: any; window: BrowserWindow }[] = [];
   private readonly POOL_MAX = 2;
 
+  // #2: 全局窗口并发上限——每个 BrowserWindow 都是一个独立 Chromium 渲染进程，
+  // 模型并发调用 webSearch/网页解析等工具时若不设上限，窗口数量会随并发数线性增长，
+  // 把内存打满。这里限制"同一时刻最多同时存在 MAX_CONCURRENT_WINDOWS 个窗口"，
+  // 超出的 newPage() 请求排队等待，等有窗口关闭腾出名额后再继续。
+  private readonly MAX_CONCURRENT_WINDOWS = 4;
+  private windowWaitQueue: Array<() => void> = [];
+
+  private async acquireWindowSlot(): Promise<void> {
+    if (this.windows.size < this.MAX_CONCURRENT_WINDOWS) return;
+    console.log(`[BrowserManager] 窗口数已达上限(${this.MAX_CONCURRENT_WINDOWS})，排队等待空闲窗口...`);
+    await new Promise<void>(resolve => this.windowWaitQueue.push(resolve));
+  }
+
+  private releaseWindowSlot(): void {
+    const next = this.windowWaitQueue.shift();
+    if (next) next();
+  }
+
   private constructor() {}
 
   static getInstance(): BrowserManager {
@@ -68,6 +86,8 @@ export class BrowserManager {
       partition
     } = options;
 
+    await this.acquireWindowSlot();
+
     const winConfig: BrowserWindowConstructorOptions = {
       width,
       height,
@@ -98,6 +118,8 @@ export class BrowserManager {
       // 若该窗口在空闲池中（被外部关闭），同步移除，避免取到死窗口
       const idx = this.idlePool.findIndex(e => e.window === win);
       if (idx !== -1) this.idlePool.splice(idx, 1);
+      // 腾出一个并发名额给排队中的下一个请求
+      this.releaseWindowSlot();
     });
     //@ts-ignore
     const page = await pie.getPage(this.browser!, win);

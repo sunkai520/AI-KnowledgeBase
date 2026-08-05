@@ -37,13 +37,63 @@ export function detectBlocked(finalUrl: string, html: string): boolean {
   return false;
 }
 
+// 按域名去重 + 全局排队：模型可能在一轮里并行发起多个搜索，若多个同时命中验证码，
+// 不做去重的话会同时弹出好几个窗口。这里保证：
+//  - 同一域名并发命中 -> 只弹一个窗口，其余调用等待并复用同一个处理结果；
+//  - 不同域名命中 -> 排队串行弹出，一次只处理一个，不会同时炸出多个窗口。
+const pendingEscalations = new Map<string, Promise<boolean>>();
+let escalationQueue: Promise<void> = Promise.resolve();
+
+function getHost(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
 /**
  * 命中验证码时弹出一个可见窗口（复用同一持久化分区），等待用户手动处理完成。
  * 只要分区一致，这里手动过一次验证之后，无头窗口共享同一份 Cookie，后续大概率不会再被拦。
  * 用户中途关掉弹出的窗口视为放弃，直接返回 false。
  */
-export async function escalateToVisibleForManualSolve(
+export function escalateToVisibleForManualSolve(
   url: string,
+  partition: string,
+  proxy?: string,
+  noProxy?: boolean,
+  timeoutMs = 120000
+): Promise<boolean> {
+  const host = getHost(url);
+
+  // 同域名已有窗口在处理中，直接复用其结果，不再新开窗口
+  const existing = pendingEscalations.get(host);
+  if (existing) {
+    console.log(`[AntiBot] ${host} 已有验证窗口在处理，等待其结果复用...`);
+    return existing;
+  }
+
+  // 不同域名：接到全局队列尾部，保证同一时刻只弹出一个窗口
+  const task = escalationQueue.then(() =>
+    doEscalate(url, host, partition, proxy, noProxy, timeoutMs)
+  );
+  // 无论本次任务成功/失败，队列都继续往下走，不被卡死
+  escalationQueue = task.then(
+    () => undefined,
+    () => undefined
+  );
+
+  pendingEscalations.set(host, task);
+  task.finally(() => {
+    if (pendingEscalations.get(host) === task) pendingEscalations.delete(host);
+  });
+
+  return task;
+}
+
+async function doEscalate(
+  url: string,
+  host: string,
   partition: string,
   proxy?: string,
   noProxy?: boolean,
@@ -64,7 +114,7 @@ export async function escalateToVisibleForManualSolve(
     await visPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
     visWin.show();
     visWin.focus();
-    console.warn(`[AntiBot] 请在弹出的窗口中手动完成验证，最长等待 ${Math.round(timeoutMs / 1000)}s`);
+    console.warn(`[AntiBot] 请在弹出的窗口中手动完成验证 (${host})，最长等待 ${Math.round(timeoutMs / 1000)}s`);
 
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
