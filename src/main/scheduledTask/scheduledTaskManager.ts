@@ -20,7 +20,7 @@ import {
   createWorkdirGenerateWordTool,
   createNotifyTool
 } from '../model/agentTools';
-import { searchByOnLine, parseWebPage } from '../model/tools';
+import { searchByOnLine, parseWebPage, getNativeSearchTools } from '../model/tools';
 import { showDesktopNotification } from '../utils/notifier';
 
 // 与 deepAgentServer/index.js 相同的写法：不缓存 db 引用，每次都经代理取当前的 getDB().db，
@@ -318,12 +318,16 @@ ${stepLog.join('\n')}
       // 联网搜索 / 网页解析 / 报告生成 / 发桌面通知：都是无会话状态的独立工具（不像 execute 需要工作目录确认），
       // 且都没有真实的破坏性副作用（不会弹出可见的浏览器窗口、不会改文件系统之外的东西），
       // 风险跟"读写工作目录文件"一个级别，默认直接开放
+      // 原生联网搜索复用对话页的 chat.nativeSearch 开关（同一个开关同一份行为），但按本次实际调用的
+      // 定时任务模型（agentCfg.modelName）判断厂商，命中则用厂商原生搜索替代自建爬虫，逻辑与
+      // chatServer/index.js 的 agentChat 路由保持一致
+      const chatCfg = ConfigManager.getInstance().getConfig()?.chat || {};
+      const nativeSearchTools = chatCfg.nativeSearch ? getNativeSearchTools(agentCfg.modelName) : [];
       const tools: any[] = [
         list_workdir,
         read_workdir_file,
         write_workdir_file,
-        searchByOnLine,
-        parseWebPage,
+        ...(nativeSearchTools.length ? nativeSearchTools : [searchByOnLine, parseWebPage]),
         generateWord,
         send_notification
       ];
