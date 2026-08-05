@@ -60,6 +60,7 @@ if (process.contextIsolated) {
             //获取模型配置
             getModelConfig: () => ipcRenderer.invoke('model:getConfig'),
             updateModelConfig:(config)=> ipcRenderer.invoke('model:updateConfig',config),
+            listModels: (params) => ipcRenderer.invoke('model:listModels', params),
             // 数据目录
             getDataPathStatus: () => ipcRenderer.invoke('dataPath:getStatus'),
             setDataDir: (dir: string) => ipcRenderer.invoke('dataPath:setDir', dir),

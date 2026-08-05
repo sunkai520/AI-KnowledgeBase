@@ -5,6 +5,7 @@ import { applyProxyToSession, updateCnWhitelist, getPacListInfo, ensureWhitelist
 import { publishTop } from "../../mqtt/index"
 import { formatDate,selectFile,uploadDoc,getSystemPath,resolvePastedFilePath,savePastedImage,readStoredAttachment } from "../utils/common"
 import { ModelFactory } from '../model/modelFactory';
+import { listModels } from '../model/listModels';
 import { ConfigManager } from '../config/configmangger';
 import { ScheduledTaskManager } from '../scheduledTask/scheduledTaskManager';
 import { planOrganize, applyOrganize, listOrganizeHistory, undoOrganize } from '../folderOrganizer/organizer';
@@ -375,6 +376,16 @@ export function initEvent(ipcMain, mainWindow) {
   // IPC 处理：获取模型列表（用于前端展示）
   ipcMain.handle('model:getActiveModels', () => {
     return ModelFactory.getActiveModels();
+  });
+
+  // IPC 处理：从厂商拉取可用模型列表（OpenAI 兼容协议 GET {baseUrl}/models），用于配置页下拉展示
+  ipcMain.handle('model:listModels', async (_event, { baseUrl, apiKey }) => {
+    try {
+      const models = await listModels({ baseUrl, apiKey });
+      return { success: true, models };
+    } catch (e: any) {
+      return { success: false, error: e?.response?.data?.error?.message || e?.message || '获取模型列表失败' };
+    }
   });
 
   // ─── 工具箱：定时任务 ─────────────────────────────────────────────────────

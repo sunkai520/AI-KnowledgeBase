@@ -24,19 +24,35 @@
 
         <el-form label-width="90px" size="default" class="dark-form" style="max-width:560px;margin:0 auto;padding-top:8px">
           <el-form-item label="厂商">
-            <el-select v-model="currentModel.provider" placeholder="选择厂商" style="width:100%" @change="onProviderChange">
+            <el-select v-model="currentModel.provider" placeholder="选择厂商" style="width:100%" popper-class="dark-select-popper" @change="onProviderChange">
               <el-option v-for="p in presets" :key="p.id" :label="p.label" :value="p.id" />
             </el-select>
           </el-form-item>
           <el-form-item label="API Key">
-            <el-input v-model="currentApiKey" show-password clearable placeholder="sk-..." :disabled="!currentModel.provider" />
+            <el-input v-model="currentApiKey" show-password clearable placeholder="sk-..." :disabled="!currentModel.provider" @blur="fetchModelListFor(activeType, { silent: true })" />
             <div class="tip">同一厂商的 API Key 在所有模型间共享，修改一处即全部生效</div>
           </el-form-item>
           <el-form-item label="Base URL">
-            <el-input v-model="currentBaseUrl" clearable placeholder="https://..." :disabled="!currentModel.provider" />
+            <el-input v-model="currentBaseUrl" clearable placeholder="https://..." :disabled="!currentModel.provider" @blur="fetchModelListFor(activeType, { silent: true })" />
           </el-form-item>
           <el-form-item label="模型名称">
-            <el-input v-model="currentModel.modelName" clearable :placeholder="currentPreset?.hint || '输入模型名称'" />
+            <div class="model-select-row">
+              <el-select
+                v-model="currentModel.modelName"
+                filterable
+                allow-create
+                default-first-option
+                clearable
+                :placeholder="currentPreset?.hint || '选择或输入模型名称'"
+                style="flex:1"
+                popper-class="dark-select-popper"
+              >
+                <el-option v-for="m in currentModelOptions" :key="m" :label="m" :value="m" />
+              </el-select>
+              <el-button :loading="loadingModelOptions" :disabled="!currentModel.provider || !currentBaseUrl" title="从厂商拉取模型列表" @click="refreshModelOptions">
+                <el-icon><Refresh /></el-icon>
+              </el-button>
+            </div>
             <div class="tip" v-if="currentPreset?.hint">{{ currentPreset.hint }}</div>
           </el-form-item>
           <el-form-item label="Temperature" v-if="activeType !== 'embedding'">
@@ -78,19 +94,35 @@
           <div class="block-title"><span class="block-dot"></span>主模型</div>
           <el-form label-width="90px" size="default">
             <el-form-item label="厂商">
-              <el-select v-model="form.agent.provider" style="width:100%" @change="onAgentProviderChange">
+              <el-select v-model="form.agent.provider" style="width:100%" popper-class="dark-select-popper" @change="onAgentProviderChange">
                 <el-option v-for="p in presets" :key="p.id" :label="p.label" :value="p.id" />
               </el-select>
             </el-form-item>
             <el-form-item label="API Key">
-              <el-input v-model="agentApiKey" show-password clearable placeholder="sk-..." :disabled="!form.agent.provider" />
+              <el-input v-model="agentApiKey" show-password clearable placeholder="sk-..." :disabled="!form.agent.provider" @blur="fetchAgentModelList({ silent: true })" />
               <div class="tip">同一厂商的 API Key 在所有模型间共享，修改一处即全部生效</div>
             </el-form-item>
             <el-form-item label="Base URL">
-              <el-input v-model="agentBaseUrl" clearable placeholder="https://..." :disabled="!form.agent.provider" />
+              <el-input v-model="agentBaseUrl" clearable placeholder="https://..." :disabled="!form.agent.provider" @blur="fetchAgentModelList({ silent: true })" />
             </el-form-item>
             <el-form-item label="模型名称">
-              <el-input v-model="form.agent.modelName" placeholder="例：deepseek-v3.2" />
+              <div class="model-select-row">
+                <el-select
+                  v-model="form.agent.modelName"
+                  filterable
+                  allow-create
+                  default-first-option
+                  clearable
+                  placeholder="选择或输入模型名称，例：deepseek-v3.2"
+                  style="flex:1"
+                  popper-class="dark-select-popper"
+                >
+                  <el-option v-for="m in agentModelOptions" :key="m" :label="m" :value="m" />
+                </el-select>
+                <el-button :loading="loadingAgentModelOptions" :disabled="!form.agent.provider || !agentBaseUrl" title="从厂商拉取模型列表" @click="refreshAgentModelOptions">
+                  <el-icon><Refresh /></el-icon>
+                </el-button>
+              </div>
             </el-form-item>
             <el-form-item label="Temperature">
               <div class="slider-row">
@@ -122,10 +154,33 @@
               <el-input v-model="form.providers.alibaba.apiKey" show-password clearable placeholder="sk-..." />
             </el-form-item>
             <el-form-item label="文生图模型">
-              <el-input v-model="form.media.imageModel" placeholder="例：wanx2.1-t2i-turbo" />
+              <el-select
+                v-model="form.media.imageModel"
+                filterable
+                allow-create
+                default-first-option
+                clearable
+                placeholder="选择或输入模型名称，例：wanx2.1-t2i-turbo"
+                style="width:100%"
+                popper-class="dark-select-popper"
+              >
+                <el-option v-for="m in imageModelOptions" :key="m" :label="m" :value="m" />
+              </el-select>
+              <div class="tip">通义万相走独立的合成任务接口，没有可查询的模型列表接口，以上仅为常见型号，也可直接输入其他型号</div>
             </el-form-item>
             <el-form-item label="图生视频模型">
-              <el-input v-model="form.media.videoModel" placeholder="例：wan2.6-i2v-flash" />
+              <el-select
+                v-model="form.media.videoModel"
+                filterable
+                allow-create
+                default-first-option
+                clearable
+                placeholder="选择或输入模型名称，例：wan2.6-i2v-flash"
+                style="width:100%"
+                popper-class="dark-select-popper"
+              >
+                <el-option v-for="m in videoModelOptions" :key="m" :label="m" :value="m" />
+              </el-select>
             </el-form-item>
           </el-form>
         </div>
@@ -308,7 +363,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { Edit, Delete, Plus } from "@element-plus/icons-vue";
+import { Edit, Delete, Plus, Refresh } from "@element-plus/icons-vue";
 import router from "../../../router";
 import {
   getAgentSkills, updateSkillEnabled, createSkill,
@@ -327,6 +382,11 @@ const presets = [
   { id: "siliconflow", label: "硅基流动 (SiliconFlow)", baseUrl: "https://api.siliconflow.cn/v1",                     hint: "如 deepseek-ai/DeepSeek-V3、Qwen/Qwen2.5-72B-Instruct" },
   { id: "xkapi",     label: "自建",           baseUrl: "http://localhost:8080/v1",                           hint: "填写你本地部署的 xkapi 地址，模型名与上游一致" },
 ];
+
+// 通义万相走 DashScope 专用的异步合成任务接口，没有可查询的 /models 列表接口，
+// 这里只放常见型号做候选，用户仍可通过 allow-create 直接输入清单外的型号
+const imageModelOptions = ["wanx2.1-t2i-turbo", "wan2.7-image-pro"];
+const videoModelOptions = ["wan2.6-i2v-flash"];
 
 // ── 一级切换 ──────────────────────────────────────────────────────────────
 const mode       = ref("assistant");
@@ -364,6 +424,63 @@ const currentBaseUrl = computed({
   set: (val) => { const id = currentModel.value?.provider; if (id && form.providers[id]) form.providers[id].baseUrl = val; },
 });
 
+// ── 模型名称下拉：从厂商拉取可用模型列表（可选，失败/未拉取时仍可直接手动输入） ──────────
+const modelOptionsMap    = reactive({ chat: [], embedding: [] });
+const currentModelOptions = computed(() => modelOptionsMap[activeType.value] || []);
+const loadingModelOptions = ref(false);
+const agentModelOptions      = ref([]);
+const loadingAgentModelOptions = ref(false);
+
+// type: "chat" | "embedding"；silent=true 用于挂载/切换厂商/失焦时的自动拉取，不弹提示、不显示按钮 loading
+async function fetchModelListFor(type, { silent = false } = {}) {
+  const providerId = form[type]?.provider;
+  if (!providerId) { if (!silent) ElMessage.warning("请先选择厂商"); return; }
+  const providerCfg = form.providers[providerId];
+  const baseUrl = providerCfg?.baseUrl;
+  if (!baseUrl) { if (!silent) ElMessage.warning("请先填写 Base URL"); return; }
+  if (!silent) loadingModelOptions.value = true;
+  try {
+    const res = await window.electronAPI.listModels({ baseUrl, apiKey: providerCfg?.apiKey || "" });
+    if (res.success) {
+      modelOptionsMap[type] = res.models;
+      if (!silent && !res.models.length) ElMessage.info("未获取到模型列表，可直接手动输入模型名称");
+    } else if (!silent) {
+      ElMessage.error(res.error || "获取模型列表失败，可直接手动输入模型名称");
+    }
+  } catch (e) {
+    if (!silent) ElMessage.error("获取模型列表失败：" + (e?.message || "未知错误"));
+  } finally {
+    if (!silent) loadingModelOptions.value = false;
+  }
+}
+
+function refreshModelOptions() {
+  fetchModelListFor(activeType.value, { silent: false });
+}
+
+async function fetchAgentModelList({ silent = false } = {}) {
+  if (!form.agent.provider) { if (!silent) ElMessage.warning("请先选择厂商"); return; }
+  if (!agentBaseUrl.value) { if (!silent) ElMessage.warning("请先填写 Base URL"); return; }
+  if (!silent) loadingAgentModelOptions.value = true;
+  try {
+    const res = await window.electronAPI.listModels({ baseUrl: agentBaseUrl.value, apiKey: agentApiKey.value });
+    if (res.success) {
+      agentModelOptions.value = res.models;
+      if (!silent && !res.models.length) ElMessage.info("未获取到模型列表，可直接手动输入模型名称");
+    } else if (!silent) {
+      ElMessage.error(res.error || "获取模型列表失败，可直接手动输入模型名称");
+    }
+  } catch (e) {
+    if (!silent) ElMessage.error("获取模型列表失败：" + (e?.message || "未知错误"));
+  } finally {
+    if (!silent) loadingAgentModelOptions.value = false;
+  }
+}
+
+function refreshAgentModelOptions() {
+  fetchAgentModelList({ silent: false });
+}
+
 // ── 主模型 computed ────────────────────────────────────────────────────────
 const agentApiKey = computed({
   get: () => { const id = form.agent.provider; return (id && form.providers[id]?.apiKey) || ""; },
@@ -377,6 +494,8 @@ function onAgentProviderChange(id) {
   const preset = presets.find(p => p.id === id);
   if (preset && !form.providers[id]) form.providers[id] = { label: preset.label, apiKey: "", baseUrl: preset.baseUrl };
   else if (preset && form.providers[id] && !form.providers[id].baseUrl) form.providers[id].baseUrl = preset.baseUrl;
+  agentModelOptions.value = [];
+  fetchAgentModelList({ silent: true });
 }
 
 // ── Skills ────────────────────────────────────────────────────────────────
@@ -635,6 +754,11 @@ async function loadConfig() {
     });
     if (res.agent)     Object.assign(form.agent,     { provider: res.agent.provider || "deepseek",  modelName: res.agent.modelName || "",     temperature: res.agent.temperature ?? 0.7, contextWindow: res.agent.contextWindow ?? 32000 });
     if (res.media)     Object.assign(form.media,     { provider: "alibaba", imageModel: res.media.imageModel || "wanx2.1-t2i-turbo", videoModel: res.media.videoModel || "wan2.6-i2v-flash" });
+
+    // 已有厂商 + Base URL 的模型，打开页面时静默预拉一次模型列表，不用等用户点刷新
+    fetchModelListFor("chat", { silent: true });
+    fetchModelListFor("embedding", { silent: true });
+    fetchAgentModelList({ silent: true });
   } catch (e) { ElMessage.error("加载配置失败：" + e.message); }
 }
 
@@ -642,6 +766,8 @@ function onProviderChange(id) {
   const preset = presets.find(p => p.id === id);
   if (preset && !form.providers[id]) form.providers[id] = { label: preset.label, apiKey: "", baseUrl: preset.baseUrl };
   else if (preset && form.providers[id] && !form.providers[id].baseUrl) form.providers[id].baseUrl = preset.baseUrl;
+  modelOptionsMap[activeType.value] = [];
+  fetchModelListFor(activeType.value, { silent: true });
 }
 
 async function switchToAgent() {
@@ -757,8 +883,23 @@ onMounted(async () => {
   :deep(.el-checkbox__label) { color: #8a9bc0; font-size: 12px; }
   :deep(.el-checkbox__inner) { background: rgba(15,23,42,0.6); border-color: rgba(99,148,255,0.3); }
   :deep(.el-input-number .el-input__wrapper) { background: rgba(255,255,255,0.06) !important; border: 1px solid rgba(99,148,255,0.25) !important; box-shadow: none !important; }
+  :deep(.el-input-number__decrease), :deep(.el-input-number__increase) {
+    background: rgba(255,255,255,0.06) !important; border-color: rgba(99,148,255,0.25) !important; color: #8a9bc0 !important;
+    &:hover { color: #a5b4fc !important; }
+  }
+  :deep(.el-button):not(.is-text):not(.is-link):not(.add-btn) {
+    background: rgba(255,255,255,0.06) !important; border: 1px solid rgba(99,148,255,0.25) !important; color: #94a3b8 !important;
+    &:hover { background: rgba(102,126,234,0.15) !important; border-color: rgba(102,126,234,0.5) !important; color: #c7d2fe !important; }
+    &.is-disabled, &.is-disabled:hover { opacity: 0.4; background: rgba(255,255,255,0.03) !important; border-color: rgba(99,148,255,0.12) !important; color: #4a5a7a !important; }
+    &.el-button--primary {
+      background: linear-gradient(135deg, #667eea 0%, #5a67d8 100%) !important; border: none !important; color: #fff !important;
+      &:hover { filter: brightness(1.1); }
+      &.is-disabled, &.is-disabled:hover { opacity: 0.5; filter: none; }
+    }
+  }
 }
 
+.model-select-row { display: flex; align-items: center; gap: 8px; width: 100%; }
 .slider-row { display: flex; align-items: center; gap: 12px; width: 100%; }
 .slider-val  { font-size: 13px; color: #a5b4fc; min-width: 28px; text-align: right; }
 .tip         { font-size: 12px; color: #4a5a7a; margin-top: 4px; line-height: 1.4; }
@@ -948,5 +1089,33 @@ onMounted(async () => {
   background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%) !important;
   border: none !important; color: #fff !important;
   box-shadow: 0 4px 15px rgba(245,158,11,0.4) !important;
+}
+
+/* el-select 下拉选项面板同样是 append-to-body，走同样的非-scoped 处理方式 */
+.dark-select-popper.el-popper {
+  background: rgba(15, 23, 42, 0.97) !important;
+  border: 1px solid rgba(99, 148, 255, 0.3) !important;
+}
+.dark-select-popper .el-popper__arrow::before {
+  background: rgba(15, 23, 42, 0.97) !important;
+  border-color: rgba(99, 148, 255, 0.3) !important;
+}
+.dark-select-popper .el-select-dropdown__item {
+  color: #c8d0e8;
+}
+.dark-select-popper .el-select-dropdown__item.is-hovering,
+.dark-select-popper .el-select-dropdown__item:hover {
+  background: rgba(102, 126, 234, 0.15) !important;
+}
+.dark-select-popper .el-select-dropdown__item.is-selected {
+  color: #a5b4fc !important;
+  font-weight: 600;
+  background: rgba(102, 126, 234, 0.12) !important;
+}
+.dark-select-popper .el-select-dropdown__item.is-disabled {
+  color: #4a5a7a;
+}
+.dark-select-popper .el-select-dropdown__empty {
+  color: #7986a8 !important;
 }
 </style>
