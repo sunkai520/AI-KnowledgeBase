@@ -184,6 +184,16 @@ export function createSearchTool(maxCalls = 5, maxFailures = 3) {
   );
 }
 
+// 判断当前模型是不是 OpenAI/xAI 系列——很多接的是中转网关，baseUrl/provider 不可靠，只能按模型名猜。
+// 命中后返回厂商原生联网搜索工具描述（Responses API 的 built-in tool，{type:...} 会被 @langchain/openai
+// 的 bindTools 原样透传，并自动切换到 /responses 端点，见 base.cjs 里 isBuiltInTool 的判断逻辑）。
+export function getNativeSearchTools(modelName) {
+  const name = String(modelName || "");
+  if (/^grok/i.test(name)) return [{ type: "web_search" }, { type: "x_search" }];
+  if (/^(gpt-|chatgpt|o[1-9](-|$))/i.test(name)) return [{ type: "web_search" }];
+  return [];
+}
+
 export const getWeather = tool(
   (input) => `It's sunny in ${input.location}.`, {
     name: "get_weather",

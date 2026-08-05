@@ -23,6 +23,8 @@ export interface chatTs {
   streaming?: boolean;
   /** 模型的最大输入上下文窗口（token 数）。第三方厂商模型没有官方 profile 可自动识别，需要手动配置，用于动态计算长期记忆压缩阈值 */
   contextWindow?: number;
+  /** 联网时优先用厂商自带的原生搜索（目前只对模型名匹配 OpenAI/Grok 系列生效，见 tools.js getNativeSearchTools），关闭则始终走自建爬虫搜索 */
+  nativeSearch?: boolean;
 }
 
 export interface embeddingTs {
@@ -81,6 +83,7 @@ export const defaultConfig: ModelConfig = {
     temperature: 0.7,
     streaming:   true,
     contextWindow: 32000,
+    nativeSearch: false,
   },
   embedding: {
     provider:   'alibaba',

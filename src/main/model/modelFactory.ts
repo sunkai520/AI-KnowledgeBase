@@ -5,6 +5,8 @@ import { ConfigManager } from '../config/configmangger';
 import { ModelConfig, ProviderConfig } from '../config/model.config';
 // @ts-ignore
 import { setLog } from "../event/index"
+// @ts-ignore
+import { createResponsesAnnotationFix } from "./patchedFetch";
 
 export interface ModelInstance {
   model: ChatOpenAI | OpenAIEmbeddings;
@@ -28,6 +30,8 @@ export interface ChatOverride {
   modelName?: string;
   temperature?: number;
   streaming?: boolean;
+  /** 规避部分中转网关 Responses API 流式响应丢 annotations 字段导致崩溃的问题，见 patchedFetch.js 注释 */
+  patchResponsesAnnotations?: boolean;
 }
 
 /** #7: 包含 apiKey/baseUrl 指纹，确保用户改完配置后立即生效 */
@@ -82,7 +86,10 @@ export class ModelFactory {
       model:         finalConfig.modelName,
       temperature:   finalConfig.temperature,
       apiKey:        finalConfig.apiKey,
-      configuration: { baseURL: finalConfig.baseUrl },
+      configuration: {
+        baseURL: finalConfig.baseUrl,
+        ...(override.patchResponsesAnnotations ? { fetch: createResponsesAnnotationFix() } : {}),
+      },
       streaming:     finalConfig.streaming,
       maxRetries:    2,
     });

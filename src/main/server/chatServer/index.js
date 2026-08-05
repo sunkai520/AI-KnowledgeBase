@@ -20,7 +20,8 @@ import {
   parseWebPage,
   createSearchTool,
   toolsMaps,
-  generateWordTool
+  generateWordTool,
+  getNativeSearchTools
 } from "../../model/tools"
 
 import {
@@ -66,6 +67,23 @@ function getChatMemoryTokenBudget() {
   const chatConfig = ConfigManager.getInstance().getConfig()?.chat || {};
   const contextWindow = Number(chatConfig.contextWindow) || DEFAULT_CONTEXT_WINDOW;
   return Math.floor(contextWindow * 0.35);
+}
+
+// message.content 平时（Chat Completions 协议）是纯字符串；但走 Responses API 时（比如触发了
+// 原生联网搜索），@langchain/openai 会把它转成内容块数组 [{type:"text", text:"...", annotations:[]}]。
+// 这里统一抹平成字符串，避免下游 str += content / 推给前端的逻辑（按字符串写的）拼出 "[object Object]"。
+function extractTextContent(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === "string") return part;
+        if (part && typeof part === "object" && typeof part.text === "string") return part.text;
+        return "";
+      })
+      .join("");
+  }
+  return content ? String(content) : "";
 }
 
 // 单次请求内（一次 agent.stream 调用期间）的兜底：工具调用结果如果在这一轮里越堆越大，
@@ -566,7 +584,20 @@ chat.post('/agentChat', async (req, res) => {
   // #4: 工具按开关组合挂载——报告生成始终可用，联网/知识库分别由 isOnline / localChecked 控制
   const webTools = [generateWordTool];
   // 每个请求创建独立的联网搜索工具，闭包内限制最多 5 次调用、连续失败 3 次后返回获取失败，避免模型反复重试或一直换词搜索
-  if (isOnline) webTools.push(createSearchTool(5, 3), parseWebPage);
+  let usingNativeSearch = false;
+  if (isOnline) {
+    // OpenAI/Grok 系列模型优先用厂商自带的原生联网搜索（走中转网关时也按模型名判断，见 getNativeSearchTools 注释），
+    // 命中就不再挂自建的爬虫搜索工具，避免两套搜索同时挂给模型导致调用行为不可控——但要用户在模型配置页手动开了
+    // nativeSearch 开关才生效，默认关闭，避免这次改动悄悄改变所有人的联网搜索行为
+    const chatCfg = ConfigManager.getInstance().getConfig()?.chat || {};
+    const nativeSearchTools = chatCfg.nativeSearch ? getNativeSearchTools(chatCfg.modelName) : [];
+    if (nativeSearchTools.length) {
+      webTools.push(...nativeSearchTools);
+      usingNativeSearch = true;
+    } else {
+      webTools.push(createSearchTool(5, 3), parseWebPage);
+    }
+  }
   if (localChecked) webTools.push(searchLocalKB);
 
   const now = formatDate(new Date().getTime());
@@ -585,10 +616,13 @@ chat.post('/agentChat', async (req, res) => {
   const tplNote = templateId ? `\n\n用户当前选择的报告模板为【${templateLabels[templateId] || templateId}】，调用 generateWord 工具时 options.templateId 必须设为 "${templateId}"，除非用户明确要求更换风格。` : '';
   let basePrompt = `当前北京时间：${now}\n\n${promptBody}${tplNote}`;
 
-  setLog(`模型工具${JSON.stringify(webTools.map(t => t.name))}`)
+  setLog(`模型工具${JSON.stringify(webTools.map(t => t.name || t.type))}`)
   console.log(basePrompt, "basePrompt")
   // 1. 实例化：模型名 + 基地址 + 密钥
-  const llm = ModelFactory.getChatModel()
+  // 原生联网搜索场景下用 patchResponsesAnnotations 规避部分中转网关的 Responses API 流式 bug
+  // （见 patchedFetch.js 注释），保留正常的逐 token 流式；isNew 避免这个特殊 fetch 配置被缓存到
+  // 普通（非原生搜索）请求的模型实例上。
+  const llm = ModelFactory.getChatModel(usingNativeSearch ? { isNew: true, customConfig: { patchResponsesAnnotations: true } } : undefined)
   const agent = createAgent({
     model: llm,
     tools: [...webTools],
@@ -825,9 +859,10 @@ chat.post('/agentChat', async (req, res) => {
           tool += (toolsMaps[chunk[0]?.name] || chunk[0]?.name) + ' | ';
         }
       } else {
-        if (chunk[0]?.content) {
-          str += chunk[0]?.content;
-          res.write(`data: ${JSON.stringify({...chunk[0], tool: tool})}\n`);
+        const textContent = extractTextContent(chunk[0]?.content);
+        if (textContent) {
+          str += textContent;
+          res.write(`data: ${JSON.stringify({...chunk[0], content: textContent, tool: tool})}\n`);
         }
       }
     }
