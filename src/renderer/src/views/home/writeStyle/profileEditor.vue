@@ -187,10 +187,21 @@
                     <el-icon><CopyDocument /></el-icon>
                     <span>复制</span>
                   </div>
-                  <div class="copy" @click="exportMessageWord(msg)">
-                    <el-icon><Download /></el-icon>
-                    <span>导出Word</span>
-                  </div>
+                  <el-dropdown trigger="click" @command="(cmd) => handleExportCommand(cmd, msg)">
+                    <div class="copy">
+                      <el-icon><Download /></el-icon>
+                      <span>导出Word</span>
+                    </div>
+                    <template #dropdown>
+                      <el-dropdown-menu>
+                        <el-dropdown-item command="quick">快速导出</el-dropdown-item>
+                        <el-dropdown-item v-if="msg.selectedSampleIds?.length" command="sampleFormat">
+                          按本轮样本格式导出
+                        </el-dropdown-item>
+                        <el-dropdown-item command="matchRef">按参考文档格式导出</el-dropdown-item>
+                      </el-dropdown-menu>
+                    </template>
+                  </el-dropdown>
                 </div>
                 <div v-if="msg.feedbackVisible" class="feedback-card">
                   <div class="feedback-head">
@@ -303,7 +314,7 @@ import AiInput from "@renderer/components/aiInput.vue";
 import MessageAttachments from "@renderer/components/messageAttachments.vue";
 import MarkDwon from "@renderer/components/markDwon.vue";
 import { copyText } from "@renderer/utils/common";
-import { detail } from "@renderer/api/writeStyle";
+import { detail, getSampleStyleTemplate } from "@renderer/api/writeStyle";
 import {
   createWritingChatSession,
   createWritingFeedback,
@@ -311,6 +322,7 @@ import {
   getWritingChatMessages,
   listWritingChatSessions,
 } from "@renderer/api/text";
+import { parseDocStyleTemplate, generateDoc } from "@renderer/api/doc";
 import router from "../../../router";
 
 const AI_ENDPOINT = "http://localhost:5120/text/aiText";
@@ -437,6 +449,122 @@ function exportMessageWord(msg) {
   } catch (e) {
     console.error("Word导出失败", e);
     ElMessage.error("Word导出失败：" + e.message);
+  }
+}
+
+function handleExportCommand(command, msg) {
+  if (command === "matchRef") {
+    exportWithReferenceFormat(msg);
+  } else if (command === "sampleFormat") {
+    exportWithSampleFormat(msg);
+  } else {
+    exportMessageWord(msg);
+  }
+}
+
+// 本轮写作如果选中了样本，样本对应的格式模板在上传时已经提取好存进库了，
+// 直接按 id 查出来当 customTemplate 用，不用再像"按参考文档格式导出"那样手动选一次文件。
+// 选中了多个样本时取第一个——和后端 listSelectedWritingSamples 的顺序语义保持一致。
+async function exportWithSampleFormat(msg) {
+  if (!msg?.content) {
+    ElMessage.warning("暂无可导出的内容");
+    return;
+  }
+  const sampleId = msg.selectedSampleIds?.[0];
+  if (!sampleId) {
+    ElMessage.warning("本轮写作未选择样本，无法按样本格式导出");
+    return;
+  }
+
+  const loadingMsg = ElMessage({ message: "正在生成文档…", duration: 0, type: "info" });
+  try {
+    let customTemplate = null;
+    try {
+      const tplRes = await getSampleStyleTemplate(sampleId);
+      customTemplate = tplRes.data;
+    } catch (e) {
+      ElMessage.warning("获取样本格式模板失败，已改用默认样式导出");
+    }
+    if (!customTemplate) {
+      ElMessage.warning("该样本未提取到格式模板(非 .docx 来源或识别失败)，已使用默认样式");
+    }
+
+    const docName = profileInfo.value.title || "AI写作";
+    const genRes = await generateDoc({
+      markdown: msg.content,
+      format: "word",
+      filename: docName,
+      options: customTemplate ? { customTemplate } : {},
+    });
+
+    const a = document.createElement("a");
+    a.href = genRes.data.downloadUrl;
+    a.download = genRes.data.filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+
+    ElMessage.success(customTemplate ? "已按样本格式导出" : "已导出(默认样式)");
+  } catch (e) {
+    console.error("按样本格式导出失败", e);
+    ElMessage.error("导出失败：" + (e?.message || e));
+  } finally {
+    loadingMsg.close();
+  }
+}
+
+// 让用户选一份参考 .docx,提取它标题/节标题/正文的字体、字号、缩进、行距,
+// 按这份格式重新生成本条消息对应的 Word——不是简单套用 app 内置的几套预设模板。
+async function exportWithReferenceFormat(msg) {
+  if (!msg?.content) {
+    ElMessage.warning("暂无可导出的内容");
+    return;
+  }
+  let files;
+  try {
+    files = await window.electronAPI.selectFile();
+  } catch (e) {
+    ElMessage.error("选择文件失败：" + (e?.message || e));
+    return;
+  }
+  if (!files?.length) return;
+  const ref = files[0];
+  if (!/\.docx$/i.test(ref.fileName || "")) {
+    ElMessage.warning("请选择 .docx 格式的参考文档(旧版 .doc 暂不支持样式识别)");
+    return;
+  }
+
+  const loadingMsg = ElMessage({ message: "正在识别参考文档格式并生成文档…", duration: 0, type: "info" });
+  try {
+    let customTemplate = null;
+    try {
+      const tplRes = await parseDocStyleTemplate(ref.filePath, ref.fileName);
+      customTemplate = tplRes.data;
+    } catch (e) {
+      ElMessage.warning("未能识别该文档的段落格式，已改用默认样式导出");
+    }
+
+    const docName = profileInfo.value.title || "AI写作";
+    const genRes = await generateDoc({
+      markdown: msg.content,
+      format: "word",
+      filename: docName,
+      options: customTemplate ? { customTemplate } : {},
+    });
+
+    const a = document.createElement("a");
+    a.href = genRes.data.downloadUrl;
+    a.download = genRes.data.filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+
+    ElMessage.success(customTemplate ? "已按参考文档格式导出" : "已导出(默认样式)");
+  } catch (e) {
+    console.error("按参考文档格式导出失败", e);
+    ElMessage.error("导出失败：" + (e?.message || e));
+  } finally {
+    loadingMsg.close();
   }
 }
 
@@ -702,6 +830,9 @@ async function sendMessage(data) {
     feedbackSaving: false,
     feedbackSubmitting: false,
     feedbackSubmitted: false,
+    // 仅内存留存，供导出时"按本轮样本格式导出"用；刷新页面/重进会话后会丢失，
+    // 届时导出会自动退化为手动选参考文档，不报错(见实施计划的范围决策)
+    selectedSampleIds: data.selectedSampleIds || [],
   });
   loading.value = true;
   abortController = new AbortController();

@@ -2,6 +2,7 @@
 import { success, error500 } from "../responseFn";
 import { formatDate } from "../../utils/common";
 import { doc, getFormattedMarkdown } from "../../utils/document";
+import { extractDocxStyleTemplate } from "../../utils/docStyleExtractor";
 import { HumanMessage, SystemMessage } from "langchain";
 import { getDB } from "../../utils/getDb";
 import { ModelFactory } from "../../model/modelFactory";
@@ -615,9 +616,10 @@ function insertSampleRecord(profileId, sample) {
       analysisProfile,
       analysisStatus,
       analysisUpdateTime,
+      styleTemplate,
       createTime,
       updateTime
-    ) values(?,?,?,?,?,?,?,?,?)
+    ) values(?,?,?,?,?,?,?,?,?,?)
   `
     )
     .run(
@@ -628,6 +630,7 @@ function insertSampleRecord(profileId, sample) {
       JSON.stringify(normalizeSampleAnalysis(sample.analysisProfile || {})),
       sample.analysisStatus || "analyzed",
       sample.analysisUpdateTime || now,
+      sample.styleTemplate || null,
       now,
       now
     );
@@ -666,10 +669,17 @@ async function extractSamplePayloads({ type, content, url, filePaths }) {
     }
 
     const file = filePaths[0];
+    // 格式模板提取和内容解析互不依赖，并行跑不额外增加明显耗时；提取失败（非 .docx/加密等）
+    // 不应该阻断样本创建——样本的核心价值是文字风格，格式模板只是锦上添花
+    const [content, styleTemplate] = await Promise.all([
+      loadDocContent(file.filePath),
+      extractDocxStyleTemplate(file.filePath, file.fileName).catch(() => null),
+    ]);
     const item = {
       sourceType,
       sourceName: file.fileName || "上传样本",
-      content: await loadDocContent(file.filePath),
+      content,
+      styleTemplate: styleTemplate ? JSON.stringify(styleTemplate) : null,
     };
 
     return [item].filter((item) => String(item.content || "").trim());
@@ -1482,6 +1492,37 @@ writeStyleServer.get("/sample/delete", async (req, res) => {
   } catch (err) {
     console.error("delete profile sample failed", err);
     return res.send(error500(err.message || "删除样本失败"));
+  }
+});
+
+// 按样本 id 取上传时顺便提取好的格式模板(字体/字号/缩进/结构规律)，
+// 供写作导出时直接当 customTemplate 用，不用再手动选参考文档解析一遍。
+// 样本没有格式模板（手动粘贴/网页来源，或提取失败）时返回 data:null，不算错误。
+writeStyleServer.get("/sample/styleTemplate", async (req, res) => {
+  const { id } = req.query;
+  if (!id) {
+    return res.send(error500("样本 ID 不能为空"));
+  }
+
+  try {
+    const sample = findProfileSampleRaw(id);
+    if (!sample) {
+      return res.send(error500("未找到样本"));
+    }
+
+    let styleTemplate = null;
+    if (sample.styleTemplate) {
+      try {
+        styleTemplate = JSON.parse(sample.styleTemplate);
+      } catch {
+        styleTemplate = null;
+      }
+    }
+
+    return res.send(success(styleTemplate));
+  } catch (err) {
+    console.error("get sample style template failed", err);
+    return res.send(error500(err.message || "获取样本格式模板失败"));
   }
 });
 

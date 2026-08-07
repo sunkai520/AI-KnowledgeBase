@@ -9,6 +9,7 @@ import {
   error
 } from "../responseFn"
 import documentGenerator from './documentGenerator';
+import { extractDocxStyleTemplate } from '../../utils/docStyleExtractor';
 
 const router = Router();
 
@@ -70,6 +71,30 @@ router.post('/generate', async (req, res) => {
   } catch (error) {
     console.error('[文档生成错误]', error);
     return res.status(500).json(error500(error.message || '文档生成失败'));
+  }
+});
+
+/**
+ * POST /doc/parseStyleTemplate
+ * 从一份参考 .docx 里提取标题/节标题/正文的字体、字号、缩进、行距,
+ * 供 /doc/generate 的 options.customTemplate 使用,实现"复刻参考文档格式"导出。
+ *
+ * Body: { filePath: string }  // 本地磁盘路径,渲染进程通过 window.electronAPI.selectFile() 选文件后拿到
+ */
+router.post('/parseStyleTemplate', async (req, res) => {
+  try {
+    const { filePath, fileName } = req.body;
+    if (!filePath) {
+      return res.status(400).json(error500('缺少 filePath'));
+    }
+    const tpl = await extractDocxStyleTemplate(filePath, fileName);
+    if (!tpl) {
+      return res.status(422).json(error500('未能从该文档识别出可用的段落格式,请确认是未加密的 .docx 文件'));
+    }
+    return res.json(success(tpl));
+  } catch (error) {
+    console.error('[样式提取错误]', error);
+    return res.status(500).json(error500(error.message || '样式提取失败'));
   }
 });
 

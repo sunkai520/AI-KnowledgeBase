@@ -321,11 +321,13 @@ function buildWritingSampleStyleText(item = {}) {
     if (analysis.coreIdea) {
       parts.push(`核心思想：${buildSamplePreview(analysis.coreIdea, 160)}`);
     }
+    if (item.structureNote) parts.push(`结构：${item.structureNote}`);
     if (parts.length) return parts.join("\n");
   }
 
   const text = item.chunkText || item.content || "";
-  return buildSamplePreview(text, 160);
+  const preview = buildSamplePreview(text, 160);
+  return item.structureNote ? `${preview}\n结构：${item.structureNote}` : preview;
 }
 
 function buildRetrievedWritingSamplesText(samples = []) {
@@ -364,7 +366,7 @@ function listSelectedWritingSamples(profileId, sampleIds = []) {
     .prepare(
       `
       SELECT id, sourceName, content, profileId
-           , analysisProfile
+           , analysisProfile, styleTemplate
       FROM writingProfileSamples
       WHERE profileId = ?
         AND id IN (${placeholders})
@@ -381,6 +383,7 @@ function listSelectedWritingSamples(profileId, sampleIds = []) {
       sourceName: item.sourceName || "写作样本",
       content: item.content || "",
       analysisProfile: safeJsonParse(item.analysisProfile, {}),
+      structureNote: safeJsonParse(item.styleTemplate, {}).structureNote,
     }));
 }
 
@@ -401,7 +404,7 @@ function enrichRetrievedWritingSamplesWithAnalysis(profileId, retrievedSamples =
   const sampleRows = db
     .prepare(
       `
-      SELECT id, sourceName, content, analysisProfile
+      SELECT id, sourceName, content, analysisProfile, styleTemplate
       FROM writingProfileSamples
       WHERE profileId = ?
       ORDER BY createTime DESC, id DESC
@@ -427,6 +430,7 @@ function enrichRetrievedWritingSamplesWithAnalysis(profileId, retrievedSamples =
       sourceName: sourceSample.sourceName || "写作样本",
       content: sourceSample.content || "",
       analysisProfile: safeJsonParse(sourceSample.analysisProfile, {}),
+      structureNote: safeJsonParse(sourceSample.styleTemplate, {}).structureNote,
     });
   }
 
@@ -470,6 +474,22 @@ async function buildWritingSystemPromptV2(themeId, userPrompt = "", options = {}
   }
   const writingSample = buildRetrievedWritingSamplesText(retrievedSamples);
 
+  // 样本标注的结构规律（"一、二、三"编号还是"第X章"等）不是建议，是硬性要求——
+  // 因为导出 Word 时(documentGenerator.parseParagraphs)全靠 markdown 的 #/##/### 语法
+  // 识别标题层级，AI 只学"语气"、标题写成正文里的一句话，上传样本时提取好的格式模板就套不上。
+  const structureNotes = [...new Set(retrievedSamples.map((item) => item.structureNote).filter(Boolean))];
+  const requirementLines = [
+    "1. 写得像用户本人：贴近语气、节奏、用词和收束方式。",
+    "2. 上方样本只用于学习写作风格，包括语气、句式、段落节奏、结构推进、开头和结尾方式。",
+    "3. 不要继承、复述或改写样本里的具体事实、主题、人物、事件、数据和观点；内容必须以用户本次需求为准。",
+    "4. 不要照抄样本文字，不要解释画像，不要说明模仿过程，直接输出成稿。",
+  ];
+  if (structureNotes.length) {
+    requirementLines.push(
+      `5. 样本标注的结构规律为"${structureNotes.join("；")}"。生成内容要按同样的编号方式组织段落层级，并且必须使用 Markdown 标题语法（#、##、### 等）标出对应层级的标题，不要把标题写成正文段落开头的一句话。`
+    );
+  }
+
   const systemPrompt = `${writeingPromt}
 
 用户本次写作需求会作为 user message 传入，必须优先满足。
@@ -485,10 +505,7 @@ ${sampleSectionTitle}：
 ${writingSample || "无"}
 
 执行要求：
-1. 写得像用户本人：贴近语气、节奏、用词和收束方式。
-2. 上方样本只用于学习写作风格，包括语气、句式、段落节奏、结构推进、开头和结尾方式。
-3. 不要继承、复述或改写样本里的具体事实、主题、人物、事件、数据和观点；内容必须以用户本次需求为准。
-4. 不要照抄样本文字，不要解释画像，不要说明模仿过程，直接输出成稿。`;
+${requirementLines.join("\n")}`;
 
   if (options.returnContext) {
     return {

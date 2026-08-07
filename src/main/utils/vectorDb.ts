@@ -366,6 +366,7 @@ export class VectorDB {
       { name: "analysisProfile", type: "TEXT" },
       { name: "analysisStatus", type: "string" },
       { name: "analysisUpdateTime", type: "string" },
+      { name: "styleTemplate", type: "TEXT" },
     ];
 
     for (const column of pendingColumns) {

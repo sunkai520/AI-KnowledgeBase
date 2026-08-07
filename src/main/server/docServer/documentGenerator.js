@@ -125,8 +125,14 @@ const TEMPLATES = {
 
 export const TEMPLATE_LIST = Object.entries(TEMPLATES).map(([id, t]) => ({ id, label: t.label }));
 
-function getTemplate(id) {
+function getTemplate(id, customTemplate) {
   const base = TEMPLATES[id] || TEMPLATES.business;
+  // customTemplate 用于"复刻参考文档格式"场景:整体不基于任何预设 id,直接把解析出来的
+  // 字体/字号/缩进等结构性样式盖在 business 之上,plain=true 让下面的生成逻辑跳过
+  // business 自带的装饰性边框/底纹/配色(参考文档本身没有这些装饰,硬套上去反而不像)。
+  if (customTemplate && typeof customTemplate === 'object') {
+    return { ...base, ...customTemplate, plain: true };
+  }
   try {
     const customizations = SettingManager.getInstance().get('templateCustomizations') || {};
     const delta = customizations[id || 'business'];
@@ -441,7 +447,7 @@ class DocumentGenerator {
         }
       });
 
-      const tpl = getTemplate(options.templateId);
+      const tpl = getTemplate(options.templateId, options.customTemplate);
       const html = this.markdownToHtml(markdown, options, tpl);
       await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
       await new Promise(resolve => setTimeout(resolve, 500));
@@ -472,50 +478,75 @@ class DocumentGenerator {
 
   async generateWord(markdown, filename, options = {}) {
     try {
-      const tpl = getTemplate(options.templateId);
+      const tpl = getTemplate(options.templateId, options.customTemplate);
       const paragraphs = this.parseParagraphs(markdown);
       const children = [];
       const bodySpacing = {
-        line: tpl.lineSpacing, lineRule: 'auto',
+        line: tpl.lineSpacing, lineRule: tpl.lineRule || 'auto',
         after: tpl.paraAfter,
       };
+      const mapAlign = (jc, fallback) => {
+        if (jc === 'center') return AlignmentType.CENTER;
+        if (jc === 'both') return AlignmentType.JUSTIFIED;
+        if (jc === 'left') return AlignmentType.LEFT;
+        if (jc === 'right') return AlignmentType.RIGHT;
+        return fallback;
+      };
+      const bodyAlignment = mapAlign(tpl.bodyAlign, AlignmentType.JUSTIFIED);
       const bodyIndent = tpl.firstLine ? { firstLine: tpl.firstLine } : undefined;
 
       for (const para of paragraphs) {
         switch (para.type) {
           case 'h1':
             children.push(new Paragraph({
-              children: this.styledRuns(para.text, { bold: true, size: tpl.h1Size, color: tpl.primary, font: tpl.bodyFont }),
+              children: this.styledRuns(para.text, {
+                bold: tpl.h1Bold ?? true, size: tpl.h1Size,
+                color: tpl.plain ? undefined : tpl.primary, font: tpl.h1Font || tpl.bodyFont
+              }),
               spacing: { before: 200, after: 300 },
-              alignment: AlignmentType.CENTER,
-              border: { bottom: { color: tpl.accent, space: 6, style: BorderStyle.SINGLE, size: 18 } }
+              alignment: mapAlign(tpl.h1Align, AlignmentType.CENTER),
+              ...(tpl.plain ? {} : { border: { bottom: { color: tpl.accent, space: 6, style: BorderStyle.SINGLE, size: 18 } } })
             }));
             break;
           case 'h2':
             children.push(new Paragraph({
-              children: this.styledRuns(para.text, { bold: true, size: tpl.h2Size, color: tpl.primary, font: tpl.bodyFont }),
+              children: this.styledRuns(para.text, {
+                bold: tpl.h2Bold ?? true, size: tpl.h2Size,
+                color: tpl.plain ? undefined : tpl.primary, font: tpl.h2Font || tpl.bodyFont
+              }),
               spacing: { before: 300, after: 160 },
-              shading: { fill: tpl.h2Bg },
-              border: { left: { color: tpl.accent, space: 8, style: BorderStyle.SINGLE, size: 28 } },
-              indent: { left: 160 }
+              ...(tpl.plain ? {} : {
+                shading: { fill: tpl.h2Bg },
+                border: { left: { color: tpl.accent, space: 8, style: BorderStyle.SINGLE, size: 28 } },
+                indent: { left: 160 }
+              })
             }));
             break;
           case 'h3':
             children.push(new Paragraph({
-              children: this.styledRuns(para.text, { bold: true, size: tpl.h3Size, color: tpl.h3Color, font: tpl.bodyFont }),
+              children: this.styledRuns(para.text, {
+                bold: true, size: tpl.h3Size,
+                color: tpl.plain ? undefined : tpl.h3Color, font: tpl.h3Font || tpl.bodyFont
+              }),
               spacing: { before: 220, after: 120 },
-              border: { bottom: { color: tpl.h3Border, space: 2, style: BorderStyle.DASHED, size: 4 } }
+              ...(tpl.plain ? {} : { border: { bottom: { color: tpl.h3Border, space: 2, style: BorderStyle.DASHED, size: 4 } } })
             }));
             break;
           case 'h4':
             children.push(new Paragraph({
-              children: this.styledRuns(para.text, { bold: true, size: tpl.h4Size, color: tpl.h4Color }),
+              children: this.styledRuns(para.text, {
+                bold: true, size: tpl.h4Size, font: tpl.plain ? tpl.bodyFont : undefined,
+                color: tpl.plain ? undefined : tpl.h4Color
+              }),
               spacing: { before: 180, after: 100 }
             }));
             break;
           case 'h5':
             children.push(new Paragraph({
-              children: this.styledRuns(para.text, { bold: true, size: tpl.h5Size, color: tpl.h5Color }),
+              children: this.styledRuns(para.text, {
+                bold: true, size: tpl.h5Size, font: tpl.plain ? tpl.bodyFont : undefined,
+                color: tpl.plain ? undefined : tpl.h5Color
+              }),
               spacing: { before: 140, after: 80 }
             }));
             break;
@@ -571,7 +602,7 @@ class DocumentGenerator {
               children: this.styledRuns(para.text, { size: tpl.bodySize, color: tpl.bodyColor, font: tpl.bodyFont }),
               spacing: bodySpacing,
               ...(bodyIndent ? { indent: bodyIndent } : {}),
-              alignment: AlignmentType.JUSTIFIED
+              alignment: bodyAlignment
             }));
         }
       }

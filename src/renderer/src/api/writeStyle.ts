@@ -44,6 +44,10 @@ export function deleteProfileSample(params: any) {
   return exctronAxios.get("/writeStyle/sample/delete", { params });
 }
 
+export function getSampleStyleTemplate(id: any) {
+  return exctronAxios.get("/writeStyle/sample/styleTemplate", { params: { id } });
+}
+
 export function list(params: any) {
   return exctronAxios.get("/writeStyle/list", { params });
 }
