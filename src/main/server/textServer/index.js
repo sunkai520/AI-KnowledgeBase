@@ -49,7 +49,10 @@ const workerPath = path.join(__dirname, 'workers', 'text-worker.js')
 manager.initialize(workerPath, 3)
 const textServer = express.Router();
 const WRITING_MEMORY_RECENT_LIMIT = 10;
-const WRITING_MEMORY_CHAR_LIMIT = 6000;
+// 写作场景经常一轮就是 2000+ 字的成稿，原先 6000 字预算 2-3 轮就顶满、触发压缩，调大一些
+// 给"改上一版"这种反复引用长文的场景多留点原文余量（最近一条消息现在无论如何都不会被压缩，
+// 这里只是让"最近一条之前"的上下文也能多撑几轮，不是这次问题的唯一防线）
+const WRITING_MEMORY_CHAR_LIMIT = 12000;
 const WRITING_MEMORY_SUMMARY_TARGET = 1600;
 // 知识库切分粒度：块太大会稀释embedding语义、检索不准；调小后配合混合检索(searchRags)精度更好
 const KB_CHUNK_SIZE = 600;
@@ -238,7 +241,7 @@ ${historyText || "无"}`;
     return String(result?.content || result || "").trim().slice(0, targetChars * 2);
   } catch (err) {
     console.error("summarizeWritingMemory failed", err);
-    return buildSamplePreview(`${existingSummary}\n${historyText}`, targetChars);
+    return null; // null 代表压缩失败，调用方不能据此删除原始消息，等下一轮再重试
   }
 }
 
@@ -251,23 +254,34 @@ async function compactWritingMemory(sessionId) {
 
   if (messages.length > WRITING_MEMORY_RECENT_LIMIT) {
     const older = messages.slice(0, messages.length - WRITING_MEMORY_RECENT_LIMIT);
-    compressedMemory = await summarizeWritingMemory(compressedMemory, older);
+    const summarized = await summarizeWritingMemory(compressedMemory, older);
+    if (summarized === null) return; // 压缩失败：不删原始消息，本轮不落盘，等下一轮再重试
+    compressedMemory = summarized;
     deleteWritingMessagesByIds(older.map((item) => item.id));
     messages = messages.slice(messages.length - WRITING_MEMORY_RECENT_LIMIT);
   }
 
-  while (messages.length && buildMemoryText(compressedMemory, messages).length > WRITING_MEMORY_CHAR_LIMIT) {
-    const batchSize = Math.min(2, messages.length);
+  // messages.length > 1（而不是 > 0）：最近一条消息——通常就是刚生成的成稿，或用户刚发来的
+  // 修改反馈——永远保留原文不参与压缩，哪怕它单独一条就超过字数预算。不然"根据反馈改上一版"
+  // 这种场景，压缩会把用户下一句话最需要引用的那条原文直接删没，只剩一段面目全非的摘要。
+  while (
+    messages.length > 1 &&
+    buildMemoryText(compressedMemory, messages).length > WRITING_MEMORY_CHAR_LIMIT
+  ) {
+    const batchSize = Math.min(2, messages.length - 1);
     const batch = messages.slice(0, batchSize);
-    compressedMemory = await summarizeWritingMemory(compressedMemory, batch);
+    const summarized = await summarizeWritingMemory(compressedMemory, batch);
+    if (summarized === null) break; // 压缩失败：停止本轮循环，剩余消息保留原样，已成功的部分照常落盘
+    compressedMemory = summarized;
     deleteWritingMessagesByIds(batch.map((item) => item.id));
     messages = messages.slice(batchSize);
   }
 
   if (!messages.length && compressedMemory.length > WRITING_MEMORY_CHAR_LIMIT) {
-    compressedMemory = await summarizeWritingMemory("", [
+    const summarized = await summarizeWritingMemory("", [
       { role: "assistant", content: compressedMemory },
     ], WRITING_MEMORY_SUMMARY_TARGET);
+    if (summarized !== null) compressedMemory = summarized;
   }
 
   db.prepare(
@@ -493,21 +507,27 @@ async function buildWritingSystemPromptV2(themeId, userPrompt = "", options = {}
   }
   const writingSample = buildRetrievedWritingSamplesText(retrievedSamples);
 
+  // 通用规则（别解释过程、以用户需求为准、语气自然、Markdown 规范……）都在 writeingPromt 里，
+  // 这里只放"这次请求特有、依赖样本内容"的规则，避免和 writeingPromt 说同一件事，
+  // 没有样本时 requirementLines 为空，直接不渲染"执行要求"这个空段落。
+  //
   // 样本标注的结构规律（"一、二、三"编号还是"第X章"等）不是建议，是硬性要求——
   // 因为导出 Word 时(documentGenerator.parseParagraphs)全靠 markdown 的 #/##/### 语法
   // 识别标题层级，AI 只学"语气"、标题写成正文里的一句话，上传样本时提取好的格式模板就套不上。
   const structureNotes = [...new Set(retrievedSamples.map((item) => item.structureNote).filter(Boolean))];
-  const requirementLines = [
-    "1. 写得像用户本人：贴近语气、节奏、用词和收束方式。",
-    "2. 上方样本只用于学习写作风格，包括语气、句式、段落节奏、结构推进、开头和结尾方式。",
-    "3. 不要继承、复述或改写样本里的具体事实、主题、人物、事件、数据和观点；内容必须以用户本次需求为准。",
-    "4. 不要照抄样本文字，不要解释画像，不要说明模仿过程，直接输出成稿。",
-  ];
-  if (structureNotes.length) {
+  const requirementLines = [];
+  if (retrievedSamples.length) {
     requirementLines.push(
-      `5. 样本标注的结构规律为"${structureNotes.join("；")}"。生成内容要按同样的编号方式组织段落层级，并且必须使用 Markdown 标题语法（#、##、### 等）标出对应层级的标题，不要把标题写成正文段落开头的一句话。`
+      "1. 上方样本仅用于学习写作风格（语气、句式、段落节奏、结构推进、开头和结尾方式），不作为事实来源。",
+      "2. 不要继承、复述或改写样本里的具体事实、主题、人物、事件、数据和观点。"
     );
   }
+  if (structureNotes.length) {
+    requirementLines.push(
+      `${requirementLines.length + 1}. 样本标注的结构规律为"${structureNotes.join("；")}"。生成内容要按同样的编号方式组织段落层级，并且必须使用 Markdown 标题语法（#、##、### 等）标出对应层级的标题，不要把标题写成正文段落开头的一句话。`
+    );
+  }
+  const executionSection = requirementLines.length ? `\n\n执行要求：\n${requirementLines.join("\n")}` : "";
 
   const systemPrompt = `${writeingPromt}
 
@@ -521,10 +541,7 @@ async function buildWritingSystemPromptV2(themeId, userPrompt = "", options = {}
 - 避免表达：${avoidPhrases.length ? avoidPhrases.join("、") : "无"}
 
 ${sampleSectionTitle}：
-${writingSample || "无"}
-
-执行要求：
-${requirementLines.join("\n")}`;
+${writingSample || "无"}${executionSection}`;
 
   if (options.returnContext) {
     return {
