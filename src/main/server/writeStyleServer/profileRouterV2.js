@@ -798,7 +798,7 @@ function ensureCurrentProfileRecord(options = {}) {
 
   const styleProfile = buildStoredStyleProfile({
     previousStyleProfile: {},
-    extractedSummary: "",
+    extractedSummary: String(options.summary || "").trim(),
     manualPreferredPhrases,
     manualAvoidPhrases,
     hasManualPreferred,
@@ -865,10 +865,15 @@ function updateManualProfileFields(profileId, overrides = {}) {
   });
   const finalPreferredPhrases = hasManualPreferred ? manualPreferredPhrases : existingPreferredPhrases;
   const finalAvoidPhrases = hasManualAvoid ? manualAvoidPhrases : existingAvoidPhrases;
+  // 手动维护画像弹窗一旦保存，"总画像"文本框里的内容（哪怕清空）就是用户此刻的真实意图，
+  // 和常用/避免表达同一套语义：表单有这个字段就按表单值覆盖，不做"空值不覆盖"的特殊保留
+  const finalExtractedSummary = hasOwn(overrides, "summary")
+    ? String(overrides.summary || "").trim()
+    : currentStyleProfile.extractedSummary || currentStyleProfile.summary || "";
   const now = formatDate(new Date().getTime());
   const styleProfile = buildStoredStyleProfile({
     previousStyleProfile: currentStyleProfile,
-    extractedSummary: currentStyleProfile.extractedSummary || currentStyleProfile.summary || "",
+    extractedSummary: finalExtractedSummary,
     manualPreferredPhrases,
     manualAvoidPhrases,
     hasManualPreferred,
@@ -1332,7 +1337,7 @@ writeStyleServer.get("/current", (req, res) => {
 });
 
 writeStyleServer.put("/current", async (req, res) => {
-  const { title = "", scene = "", identity = "", preferredPhrases = "", avoidPhrases = "" } =
+  const { title = "", scene = "", identity = "", preferredPhrases = "", avoidPhrases = "", summary = "" } =
     req.body;
 
   try {
@@ -1342,6 +1347,7 @@ writeStyleServer.put("/current", async (req, res) => {
       identity,
       manualPreferredPhrases: preferredPhrases,
       manualAvoidPhrases: avoidPhrases,
+      summary,
     });
 
     const profile = updateManualProfileFields(profileId, {
@@ -1350,6 +1356,7 @@ writeStyleServer.put("/current", async (req, res) => {
       identity,
       manualPreferredPhrases: preferredPhrases,
       manualAvoidPhrases: avoidPhrases,
+      summary,
     });
 
     return res.send(

@@ -218,6 +218,20 @@
       @closed="resetProfileForm"
     >
       <el-form :model="profileForm" label-position="top" class="profile-form">
+        <el-form-item label="总画像">
+          <el-input
+            v-model="profileForm.summary"
+            type="textarea"
+            :rows="4"
+            class="glow-input"
+            placeholder="描述你的核心写作风格，例如：语气平实克制，避免情绪化和首句定调，陈述可验证事实，以事实和数据支撑论点。"
+            maxlength="200"
+            show-word-limit
+          />
+          <div class="form-tip">
+            保存时会自动把下方的身份、场景、常用/避免表达拼接到这段文字后面，不用在这里重复填写。
+          </div>
+        </el-form-item>
         <el-form-item label="画像名称">
           <el-input
             v-model="profileForm.title"
@@ -673,6 +687,7 @@ const profileForm = reactive({
   identity: "",
   preferredPhrases: "",
   avoidPhrases: "",
+  summary: "",
 });
 
 const sampleForm = reactive({
@@ -708,6 +723,10 @@ function fillProfileForm() {
   profileForm.identity = currentProfile.value?.identity || "";
   profileForm.preferredPhrases = (currentProfile.value?.preferredPhrases || []).join("、");
   profileForm.avoidPhrases = (currentProfile.value?.avoidPhrases || []).join("、");
+  // 用 extractedSummary（不带"画像名称：xxx；用户身份：xxx"这类自动拼接的元信息）做编辑框初始值，
+  // 保存时后端会照旧把这些元信息重新拼接到展示用的 summary 上，编辑框里不用重复出现这段拼接文本
+  profileForm.summary =
+    currentProfile.value?.styleProfile?.extractedSummary || currentProfile.value?.styleProfile?.summary || "";
 }
 
 function resetProfileForm() {
