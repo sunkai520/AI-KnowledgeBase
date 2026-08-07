@@ -34,7 +34,8 @@ import {
   ToolMessage,
   SystemMessage
 } from "langchain";
-import { createSearchTool, parseWebPage } from "../../model/tools"
+import { createSearchTool, parseWebPage, getNativeSearchTools } from "../../model/tools"
+import { ConfigManager } from '../../config/configmangger';
 import { searchProfileWritingSamples } from "../writeStyleServer/profileSampleSearch";
 import path from "path";
 const db = new Proxy({}, { get: (_, prop) => getDB().db[prop] });
@@ -688,10 +689,19 @@ textServer.post('/aiText',async (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
   res.setHeader("X-Accel-Buffering", "no");
-  const llm = ModelFactory.getChatModel();
   const imagePaths = uploadedDocs.filter(d => d.type === 'image').map(d => d.filePath);
-  // 每个请求单独创建联网搜索工具：闭包内限制最多 5 次调用、连续失败 3 次后停止，避免模型反复换词重试
-  const webTools = [createSearchTool(5, 3), parseWebPage];
+  // 联网搜索工具选择逻辑保持和 chatServer 一致：模型配置页勾选了 nativeSearch 且当前模型命中
+  // OpenAI/Grok 系列时，优先用厂商自带的原生 web_search，命中就不再挂自建爬虫工具；
+  // 否则（开关未开或模型不支持）回退到自建的抓取式搜索——写作对话框本身没有联网开关，
+  // 搜索能力始终可用，这里只是决定"用哪种方式搜"，不改变"要不要搜"
+  const chatCfg = ConfigManager.getInstance().getConfig()?.chat || {};
+  const nativeSearchTools = chatCfg.nativeSearch ? getNativeSearchTools(chatCfg.modelName) : [];
+  const usingNativeSearch = nativeSearchTools.length > 0;
+  // 每个请求单独创建抓取式联网搜索工具：闭包内限制最多 5 次调用、连续失败 3 次后停止，避免模型反复换词重试
+  const webTools = usingNativeSearch ? [...nativeSearchTools] : [createSearchTool(5, 3), parseWebPage];
+  // 原生联网搜索场景下用 patchResponsesAnnotations 规避部分中转网关的 Responses API 流式 bug，
+  // 和 chatServer 保持一致；isNew 避免这个特殊 fetch 配置被缓存到普通请求的模型实例上
+  const llm = ModelFactory.getChatModel(usingNativeSearch ? { isNew: true, customConfig: { patchResponsesAnnotations: true } } : undefined);
   let str = "";
   let tool = "";
   const toolsMap = { webSearch: "联网搜索", parseWebPage: "解析网页" };

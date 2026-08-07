@@ -187,7 +187,11 @@
                     <el-icon><CopyDocument /></el-icon>
                     <span>复制</span>
                   </div>
-                  <el-dropdown trigger="click" @command="(cmd) => handleExportCommand(cmd, msg)">
+                  <el-dropdown
+                    trigger="click"
+                    popper-class="export-word-popper"
+                    @command="(cmd) => handleExportCommand(cmd, msg)"
+                  >
                     <div class="copy">
                       <el-icon><Download /></el-icon>
                       <span>导出Word</span>
@@ -1323,6 +1327,13 @@ onUnmounted(() => {
   cursor: pointer;
   display: flex;
   align-items: center;
+  // el-dropdown 会给默认插槽内容套上自己的文字色（一般是浅灰），和旁边纯 div 的"复制"
+  // 继承到的深色不一致，视觉上像是被禁用了——这里显式定死颜色，两个按钮才会一样深浅
+  color: #475569 !important;
+}
+
+.bubble .copy:hover {
+  color: #0369a1 !important;
 }
 
 .bubble .copy span {
@@ -1333,6 +1344,34 @@ onUnmounted(() => {
   display: flex;
   justify-content: flex-end;
   gap: 14px;
+}
+
+// el-dropdown 的菜单是 teleport 到 body 上的浮层，实测 :deep() 在这个项目里选不中
+// 被 teleport 出去的节点（scope 属性没带过去），只有靠 popper-class 打一个自定义类名，
+// 再用 :global() 写不带 scope 限制的选择器才能真正命中——这是 Element Plus 官方推荐的
+// "给 teleport 出去的浮层加样式"方式，不依赖任何全局主题变量，强制浅色背景+深色文字
+:global(.export-word-popper) {
+  background: #ffffff !important;
+  border: 1px solid #e2e8f0 !important;
+}
+
+:global(.export-word-popper .el-dropdown-menu) {
+  background: #ffffff !important;
+}
+
+:global(.export-word-popper .el-dropdown-menu__item) {
+  color: #334155 !important;
+}
+
+:global(.export-word-popper .el-dropdown-menu__item:not(.is-disabled):hover),
+:global(.export-word-popper .el-dropdown-menu__item:not(.is-disabled):focus) {
+  background: #f0f9ff !important;
+  color: #0369a1 !important;
+}
+
+:global(.export-word-popper .el-popper__arrow::before) {
+  background: #ffffff !important;
+  border-color: #e2e8f0 !important;
 }
 
 .feedback-card {
