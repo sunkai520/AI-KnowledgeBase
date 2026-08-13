@@ -70,6 +70,14 @@
               识别到当前模型名「{{ currentModel.modelName }}」属于 {{ nativeSearchDetected }} 系列。开启后，联网搜索优先用模型厂商自带的搜索工具，而不是本应用自带的搜索。
             </div>
           </el-form-item>
+          <el-form-item label="推理强度" v-if="activeType === 'chat' && nativeSearchDetected">
+            <el-select v-model="currentModel.reasoningEffort" style="width:100%" popper-class="dark-select-popper">
+              <el-option label="低" value="low" />
+              <el-option label="中" value="medium" />
+              <el-option label="高" value="high" />
+            </el-select>
+            <div class="tip">仅对支持推理的模型生效，非推理模型会忽略此参数。强度越高，思考越深，耗时和成本也越高。</div>
+          </el-form-item>
           <el-form-item label="上下文窗口" v-if="activeType === 'chat'">
             <el-input-number v-model="currentModel.contextWindow" :min="4000" :max="2000000" :step="1000" style="width:100%" controls-position="right" />
             <div class="tip">该模型支持的最大输入 token 数，请查看厂商文档确认，用于动态计算长期记忆压缩阈值。宁可填小不要填大，填大了起不到保护作用</div>
@@ -410,7 +418,7 @@ const form = reactive({
     siliconflow: { label: "硅基流动 (SiliconFlow)", apiKey: "", baseUrl: "https://api.siliconflow.cn/v1" },
     xkapi:     { label: "自建",           apiKey: "", baseUrl: "http://localhost:8080/v1" },
   },
-  chat:      { provider: "deepseek", modelName: "deepseek-v3.2", temperature: 0.7, streaming: true, contextWindow: 32000, nativeSearch: false },
+  chat:      { provider: "deepseek", modelName: "deepseek-v3.2", temperature: 0.7, streaming: true, contextWindow: 32000, nativeSearch: false, reasoningEffort: "high" },
   embedding: { provider: "alibaba",  modelName: "text-embedding-v4", dimensions: 1024, batchSize: 10 },
   agentPermissions: { enableShellExecute: false },
   agent: { provider: "deepseek", modelName: "deepseek-v3.2", temperature: 0.7, contextWindow: 32000 },
@@ -761,7 +769,7 @@ async function loadConfig() {
         if (saved.baseUrl) form.providers[id].baseUrl = saved.baseUrl;
       }
     }
-    if (res.chat)      Object.assign(form.chat,      { provider: res.chat.provider || "deepseek",  modelName: res.chat.modelName || "",      temperature: res.chat.temperature ?? 0.7,      streaming: res.chat.streaming ?? true, contextWindow: res.chat.contextWindow ?? 32000, nativeSearch: res.chat.nativeSearch ?? false });
+    if (res.chat)      Object.assign(form.chat,      { provider: res.chat.provider || "deepseek",  modelName: res.chat.modelName || "",      temperature: res.chat.temperature ?? 0.7,      streaming: res.chat.streaming ?? true, contextWindow: res.chat.contextWindow ?? 32000, nativeSearch: res.chat.nativeSearch ?? false, reasoningEffort: res.chat.reasoningEffort ?? "high" });
     if (res.embedding) Object.assign(form.embedding, { provider: res.embedding.provider || "alibaba", modelName: res.embedding.modelName || "", dimensions: res.embedding.dimensions ?? 1024, batchSize: res.embedding.batchSize ?? 10 });
     if (res.agentPermissions) Object.assign(form.agentPermissions, {
       enableShellExecute:  res.agentPermissions.enableShellExecute ?? false,
@@ -802,7 +810,7 @@ async function handleSave() {
   try {
     const payload = JSON.parse(JSON.stringify({
       providers:        form.providers,
-      chat:             { provider: form.chat.provider,      modelName: form.chat.modelName,      temperature: form.chat.temperature,      streaming: form.chat.streaming, contextWindow: form.chat.contextWindow, nativeSearch: form.chat.nativeSearch },
+      chat:             { provider: form.chat.provider,      modelName: form.chat.modelName,      temperature: form.chat.temperature,      streaming: form.chat.streaming, contextWindow: form.chat.contextWindow, nativeSearch: form.chat.nativeSearch, reasoningEffort: form.chat.reasoningEffort },
       embedding:        { provider: form.embedding.provider, modelName: form.embedding.modelName, dimensions: form.embedding.dimensions,  batchSize: form.embedding.batchSize },
       agentPermissions: {
         enableShellExecute:  form.agentPermissions.enableShellExecute,

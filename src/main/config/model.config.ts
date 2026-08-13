@@ -25,6 +25,8 @@ export interface chatTs {
   contextWindow?: number;
   /** 联网时优先用厂商自带的原生搜索（目前只对模型名匹配 OpenAI/Grok 系列生效，见 tools.js getNativeSearchTools），关闭则始终走自建爬虫搜索 */
   nativeSearch?: boolean;
+  /** 推理模型的思考强度，非推理模型会被厂商忽略。取值 low/medium/high */
+  reasoningEffort?: 'low' | 'medium' | 'high';
 }
 
 export interface embeddingTs {
@@ -84,6 +86,7 @@ export const defaultConfig: ModelConfig = {
     streaming:   true,
     contextWindow: 32000,
     nativeSearch: false,
+    reasoningEffort: 'high',
   },
   embedding: {
     provider:   'alibaba',

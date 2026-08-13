@@ -32,6 +32,7 @@ export interface ChatOverride {
   streaming?: boolean;
   /** 规避部分中转网关 Responses API 流式响应丢 annotations 字段导致崩溃的问题，见 patchedFetch.js 注释 */
   patchResponsesAnnotations?: boolean;
+  reasoningEffort?: 'low' | 'medium' | 'high';
 }
 
 /** #7: 包含 apiKey/baseUrl 指纹，确保用户改完配置后立即生效 */
@@ -65,13 +66,14 @@ export class ModelFactory {
       modelName:   override.modelName   ?? chat.modelName,
       temperature: override.temperature ?? chat.temperature,
       streaming:   override.streaming   ?? chat.streaming,
+      reasoningEffort: override.reasoningEffort ?? chat.reasoningEffort,
       apiKey,
       baseUrl,
     };
 
     const cacheKey = options?.tag
       ? `chat-${options.tag}`
-      : `chat-${finalConfig.providerName}-${finalConfig.modelName}-${finalConfig.temperature}-${configFingerprint(finalConfig.apiKey, finalConfig.baseUrl)}`;
+      : `chat-${finalConfig.providerName}-${finalConfig.modelName}-${finalConfig.temperature}-${finalConfig.reasoningEffort}-${configFingerprint(finalConfig.apiKey, finalConfig.baseUrl)}`;
 
     if (!options?.isNew) {
       const cached = this.instances.get(cacheKey);
@@ -91,6 +93,8 @@ export class ModelFactory {
         ...(override.patchResponsesAnnotations ? { fetch: createResponsesAnnotationFix() } : {}),
       },
       streaming:     finalConfig.streaming,
+      // 非推理模型会被厂商直接忽略这个字段，见 @langchain/openai reasoningEffort 字段注释
+      ...(finalConfig.reasoningEffort ? { reasoning: { effort: finalConfig.reasoningEffort } } : {}),
       maxRetries:    2,
     });
 
