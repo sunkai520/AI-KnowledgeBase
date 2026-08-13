@@ -14,7 +14,10 @@
             <el-icon v-if="chat.role === 'ai'"><ChatLineRound /></el-icon>
             <el-icon v-else><UserFilled /></el-icon>
           </el-avatar>
-          <div class="chat-preview">{{ chat.preview || "新会话" }}</div>
+          <div class="chat-main">
+            <div class="chat-preview">{{ chat.preview || "新会话" }}</div>
+            <div class="chat-time" v-if="formatSessionTime(chat)">{{ formatSessionTime(chat) }}</div>
+          </div>
           <div class="del">
             <el-icon
               color="red"
@@ -145,15 +148,15 @@
 
               <!-- 思考中（无步骤时） -->
               <div class="thinking" v-if="msg.thinking && !msg.steps?.length">
-                思考中<span>.</span><span>.</span><span>.</span>
+                思考中<span>.</span><span>.</span><span>.</span><span class="thinking-hint">{{ thinkingHint(msg) }}</span>
               </div>
               <!-- 工具全部完成，等待模型生成回答 -->
               <div class="thinking" v-else-if="msg.thinking && msg.steps?.length && msg.steps.every(s => s.status === 'done')">
-                整理中<span>.</span><span>.</span><span>.</span>
+                整理中<span>.</span><span>.</span><span>.</span><span class="thinking-hint">{{ thinkingHint(msg) }}</span>
               </div>
               <!-- 工具执行中 -->
               <div class="thinking thinking-sm" v-else-if="msg.thinking && msg.steps?.length">
-                执行中<span>.</span><span>.</span><span>.</span>
+                执行中<span>.</span><span>.</span><span>.</span><span class="thinking-hint">{{ thinkingHint(msg) }}</span>
               </div>
 
               <!-- 最终回答 -->
@@ -181,7 +184,9 @@
           </div>
         </div>
       </div>
-      <footer class="footer">
+      <div style="margin-top: 36px;">
+        <QuickModelBar v-model:modelName="quickModelName" v-model:reasoningEffort="quickReasoningEffort" />
+         <footer class="footer">
         <AiInput
           class="aiInput"
           @componentParams="handleSend"
@@ -189,6 +194,8 @@
           :loading="loading"
         ></AiInput>
       </footer>
+      </div>
+     
     </div>
   </div>
 </template>
@@ -203,6 +210,7 @@ import {
   CopyDocument,
 } from "@element-plus/icons-vue";
 import AiInput from "../../../components/aiInput.vue";
+import QuickModelBar from "../../../components/quickModelBar.vue";
 import MessageAttachments from "../../../components/messageAttachments.vue";
 import {
   createSessionId,
@@ -212,12 +220,34 @@ import {
 } from "@renderer/api/chat.ts";
 import MarkDwon from "@renderer/components/markDwon.vue";
 import { ElMessage, ElMessageBox } from "element-plus";
+import { formatSessionTime } from "@renderer/utils/common";
 import { copyText } from "@renderer/utils/common";
 const chats = ref([]);
 const currentChatIndex = ref(0);
 const text = ref("");
 const loading = ref(false);
 const listRef = ref(null);
+const quickModelName = ref("");
+const quickReasoningEffort = ref("");
+
+// 命中原生联网搜索/深度推理时，模型可能几分钟内不返回任何一个字（服务端自主搜索期间没有增量可转发），
+// 只靠"思考中..."几个字用户会以为卡死了，所以额外显示已等待秒数 + 长耗时提示，证明连接还活着
+const nowTick = ref(Date.now());
+let tickTimer = null;
+onMounted(() => {
+  tickTimer = setInterval(() => { nowTick.value = Date.now(); }, 1000);
+});
+function thinkingElapsedSec(msg) {
+  if (!msg?.thinkingStartedAt) return 0;
+  return Math.max(0, Math.floor((nowTick.value - msg.thinkingStartedAt) / 1000));
+}
+function thinkingHint(msg) {
+  const sec = thinkingElapsedSec(msg);
+  if (sec < 10) return "";
+  if (sec < 60) return `（已等待 ${sec} 秒）`;
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return `（已等待 ${m}分${s}秒，命中原生联网搜索/深度推理时模型会在服务端自主搜索，期间不会有任何增量返回，请耐心等待，通常 1~3 分钟）`;
+}
 
 const currentMessages = computed(() =>
   chats.value.length > 0 ? chats.value[currentChatIndex.value].messages : []
@@ -374,6 +404,7 @@ onUnmounted(() => {
   if (abortController) {
     abortController.abort();
   }
+  if (tickTimer) clearInterval(tickTimer);
 });
 let abortController = null;
 let generatingChat = null; // 当前正在流式生成的对话对象引用，与"用户正在看哪个对话"（currentChatIndex）解耦
@@ -430,6 +461,7 @@ async function handleSend(data) {
     content: "",
     loading: true,
     thinking: true,
+    thinkingStartedAt: Date.now(),
     tools: "",
     steps: [],
     stepsExpanded: true,
@@ -447,6 +479,8 @@ async function handleSend(data) {
         type: m.type,
       })),
       localChecked: data.localChecked,
+      modelName: quickModelName.value,
+      reasoningEffort: quickReasoningEffort.value,
     }, abortController.signal);
 
     const reader = response.body.getReader();
@@ -877,6 +911,14 @@ onMounted(() => {
   color: #409eff;
 }
 
+.thinking-hint {
+  margin-left: 6px;
+  font-size: 12px;
+  font-weight: 400;
+  color: #909399;
+  animation: none;
+}
+
 /* 点点点的动画 */
 .thinking span {
   animation: dotBlink 1.5s infinite;
@@ -921,7 +963,7 @@ onMounted(() => {
 }
 .footer {
   padding: 10px;
-  margin-top: 36px;
+  
   width: 100%;
   height: auto;
   background: #ffffff;
@@ -973,10 +1015,25 @@ onMounted(() => {
   background: rgba(56, 189, 248, 0.12);
 }
 
-.chat-preview {
+.chat-main {
   flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.chat-preview {
   font-size: 14px;
   color: #475569;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-time {
+  font-size: 11px;
+  color: #94a3b8;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

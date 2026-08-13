@@ -447,7 +447,9 @@ chat.post('/agentChat', async (req, res) => {
     sessionId = getUUid(),
     isOnline, //是否联网
     localChecked, //本地知识库搜索
-    uploadedDocs = []
+    uploadedDocs = [],
+    modelName, //前端对话框上快速切换的模型，不传则用模型配置页的全局设置
+    reasoningEffort //前端对话框上快速切换的推理强度，不传则用模型配置页的全局设置
   } = req.body;
   // 从 settings 读取用户选定的模板，不走请求体
   const templateId = SettingManager.getInstance().get('activeTemplateId') || 'business';
@@ -585,12 +587,20 @@ chat.post('/agentChat', async (req, res) => {
   const webTools = [generateWordTool];
   // 每个请求创建独立的联网搜索工具，闭包内限制最多 5 次调用、连续失败 3 次后返回获取失败，避免模型反复重试或一直换词搜索
   let usingNativeSearch = false;
+  const chatCfg = ConfigManager.getInstance().getConfig()?.chat || {};
+  // 对话框上快速切换的模型/推理强度覆盖全局配置，为空则回退全局默认
+  const effectiveModelName = (modelName || '').trim() || chatCfg.modelName;
+  const modelOverride = {};
+  if (modelName && modelName.trim()) modelOverride.modelName = modelName.trim();
+  if (['low', 'medium', 'high'].includes(reasoningEffort)) modelOverride.reasoningEffort = reasoningEffort;
+  // "none"（对话框上的"极速"）显式强制不带 reasoning 参数，用空字符串写入 override——
+  // 和"没传 reasoningEffort"（undefined）区分开，避免 ModelFactory 用 ?? 回退到全局默认强度
+  else if (reasoningEffort === 'none') modelOverride.reasoningEffort = '';
   if (isOnline) {
     // OpenAI/Grok 系列模型优先用厂商自带的原生联网搜索（走中转网关时也按模型名判断，见 getNativeSearchTools 注释），
     // 命中就不再挂自建的爬虫搜索工具，避免两套搜索同时挂给模型导致调用行为不可控——但要用户在模型配置页手动开了
     // nativeSearch 开关才生效，默认关闭，避免这次改动悄悄改变所有人的联网搜索行为
-    const chatCfg = ConfigManager.getInstance().getConfig()?.chat || {};
-    const nativeSearchTools = chatCfg.nativeSearch ? getNativeSearchTools(chatCfg.modelName) : [];
+    const nativeSearchTools = chatCfg.nativeSearch ? getNativeSearchTools(effectiveModelName) : [];
     if (nativeSearchTools.length) {
       webTools.push(...nativeSearchTools);
       usingNativeSearch = true;
@@ -622,7 +632,11 @@ chat.post('/agentChat', async (req, res) => {
   // 原生联网搜索场景下用 patchResponsesAnnotations 规避部分中转网关的 Responses API 流式 bug
   // （见 patchedFetch.js 注释），保留正常的逐 token 流式；isNew 避免这个特殊 fetch 配置被缓存到
   // 普通（非原生搜索）请求的模型实例上。
-  const llm = ModelFactory.getChatModel(usingNativeSearch ? { isNew: true, customConfig: { patchResponsesAnnotations: true } } : undefined)
+  const llm = ModelFactory.getChatModel(
+    usingNativeSearch
+      ? { isNew: true, customConfig: { ...modelOverride, patchResponsesAnnotations: true } }
+      : (Object.keys(modelOverride).length ? { customConfig: modelOverride } : undefined)
+  )
   const agent = createAgent({
     model: llm,
     tools: [...webTools],

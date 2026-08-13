@@ -45,6 +45,14 @@ export function formatDate(date, fmt = "yyyy-MM-dd hh:mm:ss") {
   }
   return fmt;
 }
+// 会话列表创建时间展示：不同页面的会话表字段名不统一（createTime / createdAt），这里统一兼容取值；
+// 存的已经是本地时间 "yyyy-MM-dd hh:mm:ss" 字符串，直接裁剪成"MM-dd HH:mm"，不用再转 Date 对象避免时区问题
+export function formatSessionTime(session) {
+  const raw = session?.createTime ?? session?.createdAt;
+  if (!raw) return "";
+  const m = String(raw).match(/^\d{4}-(\d{2}-\d{2}) (\d{2}:\d{2})/);
+  return m ? `${m[1]} ${m[2]}` : String(raw);
+}
 //复制
 export function copyText(text) {
   if (document.execCommand("copy")) {

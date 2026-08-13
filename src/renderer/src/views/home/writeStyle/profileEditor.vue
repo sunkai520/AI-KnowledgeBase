@@ -4,7 +4,9 @@
       <div class="sidebar-header">
         <div>
           <div class="sidebar-title">写作会话</div>
-          <div class="sidebar-subtitle">{{ profileInfo.title || "个人写作" }}</div>
+          <div class="sidebar-subtitle">
+            {{ profileInfo.title || "个人写作" }}
+          </div>
         </div>
       </div>
 
@@ -18,7 +20,10 @@
           <el-avatar size="24" :class="chat.role">
             <el-icon><ChatLineRound /></el-icon>
           </el-avatar>
-          <div class="chat-preview">{{ chat.preview || "新写作会话" }}</div>
+          <div class="chat-main">
+            <div class="chat-preview">{{ chat.preview || "新写作会话" }}</div>
+            <div class="chat-time" v-if="formatSessionTime(chat)">{{ formatSessionTime(chat) }}</div>
+          </div>
           <el-icon
             class="delete-session"
             color="#ef4444"
@@ -67,14 +72,22 @@
                         <span class="step-dot"></span>
                         <span class="step-name">{{ step.displayName }}</span>
                         <span
-                          v-if="step.status === 'done' && (step.results?.length || step.kbResults?.length || step.parseResult)"
+                          v-if="
+                            step.status === 'done' &&
+                            (step.results?.length ||
+                              step.kbResults?.length ||
+                              step.parseResult)
+                          "
                           class="step-expand-btn"
                           @click.stop="step.expanded = !step.expanded"
                         >
                           {{ step.expanded ? "收起" : "展开" }}
                         </span>
                       </div>
-                      <div v-if="step.expanded && step.results?.length" class="search-results">
+                      <div
+                        v-if="step.expanded && step.results?.length"
+                        class="search-results"
+                      >
                         <a
                           v-for="(r, ri) in step.results"
                           :key="ri"
@@ -83,35 +96,69 @@
                           class="search-result-card"
                         >
                           <div class="sr-title">{{ r.title }}</div>
-                          <div class="sr-meta"><span class="sr-source">{{ r.source || r.url }}</span></div>
-                          <div v-if="r.snippet" class="sr-snippet">{{ r.snippet }}</div>
+                          <div class="sr-meta">
+                            <span class="sr-source">{{
+                              r.source || r.url
+                            }}</span>
+                          </div>
+                          <div v-if="r.snippet" class="sr-snippet">
+                            {{ r.snippet }}
+                          </div>
                         </a>
                       </div>
-                      <div v-if="step.expanded && step.kbResults?.length" class="kb-results">
-                        <div v-for="(r, ri) in step.kbResults" :key="ri" class="kb-result-card">
+                      <div
+                        v-if="step.expanded && step.kbResults?.length"
+                        class="kb-results"
+                      >
+                        <div
+                          v-for="(r, ri) in step.kbResults"
+                          :key="ri"
+                          class="kb-result-card"
+                        >
                           <div class="kb-head">
                             <span class="kb-badge">知识 {{ r.index }}</span>
-                            <span v-if="r.source" class="kb-source">{{ r.source }}</span>
-                            <span v-if="r.similarity != null" class="kb-sim">相似度 {{ r.similarity }}%</span>
+                            <span v-if="r.source" class="kb-source">{{
+                              r.source
+                            }}</span>
+                            <span v-if="r.similarity != null" class="kb-sim"
+                              >相似度 {{ r.similarity }}%</span
+                            >
                           </div>
-                          <div class="kb-content">{{ stripHtml(r.content) }}</div>
+                          <div class="kb-content">
+                            {{ stripHtml(r.content) }}
+                          </div>
                         </div>
                       </div>
-                      <div v-if="step.expanded && step.parseResult" class="parse-result">
+                      <div
+                        v-if="step.expanded && step.parseResult"
+                        class="parse-result"
+                      >
                         <div class="pr-header">
-                          <a :href="step.parseResult.url" target="_blank" class="pr-title">
+                          <a
+                            :href="step.parseResult.url"
+                            target="_blank"
+                            class="pr-title"
+                          >
                             {{ step.parseResult.title || step.parseResult.url }}
                           </a>
                           <span class="pr-url">{{ step.parseResult.url }}</span>
                         </div>
-                        <div class="pr-content" v-html="step.parseResult.markdown"></div>
+                        <div
+                          class="pr-content"
+                          v-html="step.parseResult.markdown"
+                        ></div>
                       </div>
                     </template>
                   </div>
                 </template>
                 <template v-else>
-                  <div class="steps-summary" @click="msg.stepsExpanded = !msg.stepsExpanded">
-                    <span class="steps-toggle">{{ msg.stepsExpanded ? "▾" : "▸" }}</span>
+                  <div
+                    class="steps-summary"
+                    @click="msg.stepsExpanded = !msg.stepsExpanded"
+                  >
+                    <span class="steps-toggle">{{
+                      msg.stepsExpanded ? "▾" : "▸"
+                    }}</span>
                     已执行 {{ msg.steps.length }} 个步骤
                   </div>
                   <div v-if="msg.stepsExpanded" class="steps-done-list">
@@ -120,14 +167,21 @@
                         <span class="step-check">✓</span>
                         <span>{{ step.displayName }}</span>
                         <span
-                          v-if="step.results?.length || step.kbResults?.length || step.parseResult"
+                          v-if="
+                            step.results?.length ||
+                            step.kbResults?.length ||
+                            step.parseResult
+                          "
                           class="step-expand-btn"
                           @click.stop="step.expanded = !step.expanded"
                         >
                           {{ step.expanded ? "收起" : "展开" }}
                         </span>
                       </div>
-                      <div v-if="step.expanded && step.results?.length" class="search-results">
+                      <div
+                        v-if="step.expanded && step.results?.length"
+                        class="search-results"
+                      >
                         <a
                           v-for="(r, ri) in step.results"
                           :key="ri"
@@ -136,28 +190,57 @@
                           class="search-result-card"
                         >
                           <div class="sr-title">{{ r.title }}</div>
-                          <div class="sr-meta"><span class="sr-source">{{ r.source || r.url }}</span></div>
-                          <div v-if="r.snippet" class="sr-snippet">{{ r.snippet }}</div>
+                          <div class="sr-meta">
+                            <span class="sr-source">{{
+                              r.source || r.url
+                            }}</span>
+                          </div>
+                          <div v-if="r.snippet" class="sr-snippet">
+                            {{ r.snippet }}
+                          </div>
                         </a>
                       </div>
-                      <div v-if="step.expanded && step.kbResults?.length" class="kb-results">
-                        <div v-for="(r, ri) in step.kbResults" :key="ri" class="kb-result-card">
+                      <div
+                        v-if="step.expanded && step.kbResults?.length"
+                        class="kb-results"
+                      >
+                        <div
+                          v-for="(r, ri) in step.kbResults"
+                          :key="ri"
+                          class="kb-result-card"
+                        >
                           <div class="kb-head">
                             <span class="kb-badge">知识 {{ r.index }}</span>
-                            <span v-if="r.source" class="kb-source">{{ r.source }}</span>
-                            <span v-if="r.similarity != null" class="kb-sim">相似度 {{ r.similarity }}%</span>
+                            <span v-if="r.source" class="kb-source">{{
+                              r.source
+                            }}</span>
+                            <span v-if="r.similarity != null" class="kb-sim"
+                              >相似度 {{ r.similarity }}%</span
+                            >
                           </div>
-                          <div class="kb-content">{{ stripHtml(r.content) }}</div>
+                          <div class="kb-content">
+                            {{ stripHtml(r.content) }}
+                          </div>
                         </div>
                       </div>
-                      <div v-if="step.expanded && step.parseResult" class="parse-result">
+                      <div
+                        v-if="step.expanded && step.parseResult"
+                        class="parse-result"
+                      >
                         <div class="pr-header">
-                          <a :href="step.parseResult.url" target="_blank" class="pr-title">
+                          <a
+                            :href="step.parseResult.url"
+                            target="_blank"
+                            class="pr-title"
+                          >
                             {{ step.parseResult.title || step.parseResult.url }}
                           </a>
                           <span class="pr-url">{{ step.parseResult.url }}</span>
                         </div>
-                        <div class="pr-content" v-html="step.parseResult.markdown"></div>
+                        <div
+                          class="pr-content"
+                          v-html="step.parseResult.markdown"
+                        ></div>
                       </div>
                     </template>
                   </div>
@@ -165,16 +248,26 @@
               </div>
 
               <div class="thinking" v-if="msg.thinking && !msg.steps?.length">
-                思考中<span>.</span><span>.</span><span>.</span>
+                思考中<span>.</span><span>.</span><span>.</span
+                ><span class="thinking-hint">{{ thinkingHint(msg) }}</span>
               </div>
               <div
                 class="thinking"
-                v-else-if="msg.thinking && msg.steps?.length && msg.steps.every((step) => step.status === 'done')"
+                v-else-if="
+                  msg.thinking &&
+                  msg.steps?.length &&
+                  msg.steps.every((step) => step.status === 'done')
+                "
               >
-                写作中<span>.</span><span>.</span><span>.</span>
+                写作中<span>.</span><span>.</span><span>.</span
+                ><span class="thinking-hint">{{ thinkingHint(msg) }}</span>
               </div>
-              <div class="thinking thinking-sm" v-else-if="msg.thinking && msg.steps?.length">
-                执行中<span>.</span><span>.</span><span>.</span>
+              <div
+                class="thinking thinking-sm"
+                v-else-if="msg.thinking && msg.steps?.length"
+              >
+                执行中<span>.</span><span>.</span><span>.</span
+                ><span class="thinking-hint">{{ thinkingHint(msg) }}</span>
               </div>
 
               <div class="content markdown-content" v-if="msg.content">
@@ -198,11 +291,18 @@
                     </div>
                     <template #dropdown>
                       <el-dropdown-menu>
-                        <el-dropdown-item command="quick">快速导出</el-dropdown-item>
-                        <el-dropdown-item v-if="msg.selectedSampleIds?.length" command="sampleFormat">
+                        <el-dropdown-item command="quick"
+                          >快速导出</el-dropdown-item
+                        >
+                        <el-dropdown-item
+                          v-if="msg.selectedSampleIds?.length"
+                          command="sampleFormat"
+                        >
                           按本轮样本格式导出
                         </el-dropdown-item>
-                        <el-dropdown-item command="matchRef">按参考文档格式导出</el-dropdown-item>
+                        <el-dropdown-item command="matchRef"
+                          >按参考文档格式导出</el-dropdown-item
+                        >
                       </el-dropdown-menu>
                     </template>
                   </el-dropdown>
@@ -215,7 +315,9 @@
                         评分和修改意见会进入反馈样本池，用于后续提炼画像候选规则。
                       </div>
                     </div>
-                    <el-tag size="small" class="feedback-score-tip">1-10 分</el-tag>
+                    <el-tag size="small" class="feedback-score-tip"
+                      >1-10 分</el-tag
+                    >
                   </div>
                   <div class="feedback-rate-row">
                     <el-rate
@@ -237,7 +339,11 @@
                     placeholder="如果需要修改，可以写：更口语一点、短一点、别那么正式、结尾更有力..."
                   />
                   <div class="feedback-actions">
-                    <span v-if="msg.feedbackSubmitted" class="feedback-saved-tip">反馈已保存</span>
+                    <span
+                      v-if="msg.feedbackSubmitted"
+                      class="feedback-saved-tip"
+                      >反馈已保存</span
+                    >
                     <el-button
                       class="feedback-btn"
                       size="small"
@@ -279,23 +385,32 @@
 
       <!-- 回到底部：用户往上翻看历史时出现，点击后跳到最新内容并恢复自动跟随 -->
       <transition name="scroll-btn-fade">
-        <div v-if="showScrollBtn" class="scroll-bottom-btn" @click="scrollBottom(true)">
+        <div
+          v-if="showScrollBtn"
+          class="scroll-bottom-btn"
+          @click="scrollBottom(true)"
+        >
           <el-icon><Bottom /></el-icon>
         </div>
       </transition>
-
-      <footer class="footer">
-        <AiInput
-          class="aiInput"
-          :writeId="currentProfileId"
-          :loading="loading"
-          :showInternetToggle="false"
-          :showSampleSelect="true"
-          :sampleOptions="sampleOptions"
-          @componentParams="handleSend"
-          @stop="stopGeneration"
+      <div style="margin-top: 36px">
+        <QuickModelBar
+          v-model:modelName="quickModelName"
+          v-model:reasoningEffort="quickReasoningEffort"
         />
-      </footer>
+        <footer class="footer">
+          <AiInput
+            class="aiInput"
+            :writeId="currentProfileId"
+            :loading="loading"
+            :showInternetToggle="false"
+            :showSampleSelect="true"
+            :sampleOptions="sampleOptions"
+            @componentParams="handleSend"
+            @stop="stopGeneration"
+          />
+        </footer>
+      </div>
     </main>
   </div>
 </template>
@@ -315,9 +430,10 @@ import {
 import { ElMessage, ElMessageBox } from "element-plus";
 import { marked } from "marked";
 import AiInput from "@renderer/components/aiInput.vue";
+import QuickModelBar from "@renderer/components/quickModelBar.vue";
 import MessageAttachments from "@renderer/components/messageAttachments.vue";
 import MarkDwon from "@renderer/components/markDwon.vue";
-import { copyText } from "@renderer/utils/common";
+import { copyText, formatSessionTime } from "@renderer/utils/common";
 import { detail, getSampleStyleTemplate } from "@renderer/api/writeStyle";
 import {
   createWritingChatSession,
@@ -341,8 +457,32 @@ const listRef = ref(null);
 const showScrollBtn = ref(false);
 let abortController = null;
 let scrollTimer = null;
+const quickModelName = ref("");
+const quickReasoningEffort = ref("");
 
-const currentMessages = computed(() => chats.value[currentChatIndex.value]?.messages || []);
+// 命中原生联网搜索/深度推理时，模型可能几分钟内不返回任何一个字（服务端自主搜索期间没有增量可转发），
+// 只靠"思考中..."几个字用户会以为卡死了，所以额外显示已等待秒数 + 长耗时提示，证明连接还活着
+const nowTick = ref(Date.now());
+let tickTimer = null;
+function thinkingElapsedSec(msg) {
+  if (!msg?.thinkingStartedAt) return 0;
+  return Math.max(
+    0,
+    Math.floor((nowTick.value - msg.thinkingStartedAt) / 1000)
+  );
+}
+function thinkingHint(msg) {
+  const sec = thinkingElapsedSec(msg);
+  if (sec < 10) return "";
+  if (sec < 60) return `（已等待 ${sec} 秒）`;
+  const m = Math.floor(sec / 60),
+    s = sec % 60;
+  return `（已等待 ${m}分${s}秒，命中原生联网搜索/深度推理时模型会在服务端自主搜索，期间不会有任何增量返回，请耐心等待，通常 1~3 分钟）`;
+}
+
+const currentMessages = computed(
+  () => chats.value[currentChatIndex.value]?.messages || []
+);
 const currentProfileId = computed(() => Number(profileInfo.value?.id) || 0);
 const sampleOptions = computed(() => profileInfo.value?.samples || []);
 const htmlDecoder = document.createElement("textarea");
@@ -357,12 +497,14 @@ function createChat(options = {}) {
     sessionId = `${Date.now()}-${Math.random().toString(16).slice(2)}`,
     preview = "新写作会话",
     messages = null,
+    createdAt = null,
   } = options;
   return {
     id: sessionId,
     sessionId,
     role: "ai",
     preview,
+    createdAt,
     messages: messages || [{ role: "ai", content: buildWelcomeMessage() }],
   };
 }
@@ -422,7 +564,10 @@ async function deleteChat(idx) {
     await createNewChat();
     return;
   }
-  currentChatIndex.value = Math.max(0, Math.min(currentChatIndex.value, chats.value.length - 1));
+  currentChatIndex.value = Math.max(
+    0,
+    Math.min(currentChatIndex.value, chats.value.length - 1)
+  );
   await loadChatMessages(chats.value[currentChatIndex.value]);
 }
 
@@ -480,7 +625,11 @@ async function exportWithSampleFormat(msg) {
     return;
   }
 
-  const loadingMsg = ElMessage({ message: "正在生成文档…", duration: 0, type: "info" });
+  const loadingMsg = ElMessage({
+    message: "正在生成文档…",
+    duration: 0,
+    type: "info",
+  });
   try {
     let customTemplate = null;
     try {
@@ -490,7 +639,9 @@ async function exportWithSampleFormat(msg) {
       ElMessage.warning("获取样本格式模板失败，已改用默认样式导出");
     }
     if (!customTemplate) {
-      ElMessage.warning("该样本未提取到格式模板(非 .docx 来源或识别失败)，已使用默认样式");
+      ElMessage.warning(
+        "该样本未提取到格式模板(非 .docx 来源或识别失败)，已使用默认样式"
+      );
     }
 
     const docName = profileInfo.value.title || "AI写作";
@@ -534,11 +685,17 @@ async function exportWithReferenceFormat(msg) {
   if (!files?.length) return;
   const ref = files[0];
   if (!/\.docx$/i.test(ref.fileName || "")) {
-    ElMessage.warning("请选择 .docx 格式的参考文档(旧版 .doc 暂不支持样式识别)");
+    ElMessage.warning(
+      "请选择 .docx 格式的参考文档(旧版 .doc 暂不支持样式识别)"
+    );
     return;
   }
 
-  const loadingMsg = ElMessage({ message: "正在识别参考文档格式并生成文档…", duration: 0, type: "info" });
+  const loadingMsg = ElMessage({
+    message: "正在识别参考文档格式并生成文档…",
+    duration: 0,
+    type: "info",
+  });
   try {
     let customTemplate = null;
     try {
@@ -563,7 +720,9 @@ async function exportWithReferenceFormat(msg) {
     a.click();
     document.body.removeChild(a);
 
-    ElMessage.success(customTemplate ? "已按参考文档格式导出" : "已导出(默认样式)");
+    ElMessage.success(
+      customTemplate ? "已按参考文档格式导出" : "已导出(默认样式)"
+    );
   } catch (e) {
     console.error("按参考文档格式导出失败", e);
     ElMessage.error("导出失败：" + (e?.message || e));
@@ -619,12 +778,22 @@ function stopGeneration() {
 }
 
 function friendlyError(raw = "") {
-  if (/unexpected item type in content|invalid.*content.*type|image_url.*not.*support|does not support.*image/i.test(raw)) return "当前模型不支持图片输入，请更换支持视觉的模型后重试，或不要上传图片";
-  if (/429|quota|rate.?limit|billing/i.test(raw)) return "API 配额不足或请求过于频繁，请检查账号余额后重试";
-  if (/401|unauthorized|invalid.?key/i.test(raw)) return "API Key 无效，请前往模型配置页面检查";
-  if (/403|forbidden/i.test(raw)) return "无权限访问该模型，请检查 API Key 或套餐";
-  if (/404|not.?found|does not exist|no access/i.test(raw)) return "模型不存在或无访问权限，请前往模型配置页面确认模型名称";
-  if (/5\d\d|internal.?error|server.?error/i.test(raw)) return "模型服务异常，请稍后重试";
+  if (
+    /unexpected item type in content|invalid.*content.*type|image_url.*not.*support|does not support.*image/i.test(
+      raw
+    )
+  )
+    return "当前模型不支持图片输入，请更换支持视觉的模型后重试，或不要上传图片";
+  if (/429|quota|rate.?limit|billing/i.test(raw))
+    return "API 配额不足或请求过于频繁，请检查账号余额后重试";
+  if (/401|unauthorized|invalid.?key/i.test(raw))
+    return "API Key 无效，请前往模型配置页面检查";
+  if (/403|forbidden/i.test(raw))
+    return "无权限访问该模型，请检查 API Key 或套餐";
+  if (/404|not.?found|does not exist|no access/i.test(raw))
+    return "模型不存在或无访问权限，请前往模型配置页面确认模型名称";
+  if (/5\d\d|internal.?error|server.?error/i.test(raw))
+    return "模型服务异常，请稍后重试";
   if (/timeout|timed.?out/i.test(raw)) return "请求超时，请稍后重试";
   if (/network|connect/i.test(raw)) return "网络连接失败，请检查网络后重试";
   return raw || "未知错误，请稍后重试";
@@ -632,7 +801,9 @@ function friendlyError(raw = "") {
 
 function upsertToolResult(message, event) {
   const steps = [...(message.steps || [])];
-  const reverseIndex = [...steps].reverse().findIndex((step) => step.tool === event.toolName);
+  const reverseIndex = [...steps]
+    .reverse()
+    .findIndex((step) => step.tool === event.toolName);
   if (reverseIndex === -1) return;
   const index = steps.length - 1 - reverseIndex;
   const currentStep = steps[index];
@@ -678,9 +849,13 @@ function applyStreamEvent(message, event) {
 
   if (event.type === "tool_done") {
     const steps = [...(message.steps || [])];
-    const reverseIndex = [...steps].reverse().findIndex(
-      (step) => step.status === "running" && (!event.toolName || step.tool === event.toolName)
-    );
+    const reverseIndex = [...steps]
+      .reverse()
+      .findIndex(
+        (step) =>
+          step.status === "running" &&
+          (!event.toolName || step.tool === event.toolName)
+      );
     if (reverseIndex !== -1) {
       const index = steps.length - 1 - reverseIndex;
       steps[index] = { ...steps[index], status: "done" };
@@ -776,8 +951,12 @@ async function loadChatMessages(chat) {
   if (!chat?.sessionId) return;
   try {
     const res = await getWritingChatMessages(chat.sessionId);
-    const messages = (res.data || []).map(mapPersistedMessage).filter((item) => item.content);
-    chat.messages = messages.length ? messages : [{ role: "ai", content: buildWelcomeMessage() }];
+    const messages = (res.data || [])
+      .map(mapPersistedMessage)
+      .filter((item) => item.content);
+    chat.messages = messages.length
+      ? messages
+      : [{ role: "ai", content: buildWelcomeMessage() }];
   } catch (err) {
     ElMessage.error(err.message || "加载写作会话失败");
   }
@@ -791,6 +970,7 @@ async function loadWritingSessions(profileId) {
       sessionId: item.sessionId,
       preview: normalizeSessionPreview(item.preview || item.name),
       messages: [{ role: "ai", content: buildWelcomeMessage() }],
+      createdAt: item.createdAt,
     })
   );
 
@@ -824,6 +1004,7 @@ async function sendMessage(data) {
     content: "",
     loading: true,
     thinking: true,
+    thinkingStartedAt: Date.now(),
     tools: "",
     steps: [],
     stepsExpanded: false,
@@ -853,6 +1034,8 @@ async function sendMessage(data) {
         streamEvents: true,
         selectedSampleIds: data.selectedSampleIds || [],
         uploadedDocs: data.uploadedDocs || [],
+        modelName: quickModelName.value,
+        reasoningEffort: quickReasoningEffort.value,
       }),
       signal: abortController.signal,
     });
@@ -884,12 +1067,14 @@ async function sendMessage(data) {
 
     if (lineBuffer.startsWith("data: ")) {
       const event = parseStreamEvent(lineBuffer.slice(6).trim());
-      if (event) applyStreamEvent(chat.messages[chat.messages.length - 1], event);
+      if (event)
+        applyStreamEvent(chat.messages[chat.messages.length - 1], event);
     }
 
     const lastMsg = chat.messages[chat.messages.length - 1];
     lastMsg.thinking = false;
-    if (!lastMsg.content) lastMsg.content = "没有收到有效内容，请换个说法再试一次。";
+    if (!lastMsg.content)
+      lastMsg.content = "没有收到有效内容，请换个说法再试一次。";
     if (lastMsg.content && !lastMsg.content.startsWith("没有收到有效内容")) {
       lastMsg.feedbackVisible = true;
     }
@@ -928,11 +1113,17 @@ async function loadProfile() {
   }
 }
 
-onMounted(loadProfile);
+onMounted(() => {
+  loadProfile();
+  tickTimer = setInterval(() => {
+    nowTick.value = Date.now();
+  }, 1000);
+});
 
 onUnmounted(() => {
   if (abortController) abortController.abort();
   if (scrollTimer) cancelAnimationFrame(scrollTimer);
+  if (tickTimer) clearInterval(tickTimer);
 });
 </script>
 
@@ -1009,8 +1200,15 @@ onUnmounted(() => {
   background: rgba(56, 189, 248, 0.12);
 }
 
-.chat-preview {
+.chat-main {
   flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.chat-preview {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1018,6 +1216,14 @@ onUnmounted(() => {
   color: #334155;
   font-size: 13px;
   font-weight: 600;
+}
+
+.chat-time {
+  font-size: 11px;
+  color: #94a3b8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .delete-session {
@@ -1106,8 +1312,7 @@ onUnmounted(() => {
   border-radius: 16px;
   padding: 20px;
   background: linear-gradient(180deg, #ffffff, #f9fafb);
-  box-shadow:
-    0 10px 30px rgba(15, 23, 42, 0.08),
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08),
     inset 0 1px 0 rgba(255, 255, 255, 0.6);
 }
 
@@ -1132,8 +1337,14 @@ onUnmounted(() => {
 }
 
 @keyframes blink {
-  0%, 80%, 100% { opacity: 0.2; }
-  40% { opacity: 1; }
+  0%,
+  80%,
+  100% {
+    opacity: 0.2;
+  }
+  40% {
+    opacity: 1;
+  }
 }
 
 .options {
@@ -1146,7 +1357,6 @@ onUnmounted(() => {
 .footer {
   flex: 0 0 auto;
   padding: 10px;
-  margin-top: 12px;
   width: 100%;
   height: auto;
   box-sizing: border-box;
@@ -1159,18 +1369,50 @@ onUnmounted(() => {
   width: 100%;
 }
 
-.markdown-content :deep(img) { max-width: 100%; height: auto; border-radius: 8px; }
-.markdown-content :deep(a) { color: #0369a1; text-decoration: underline; word-break: break-all; }
-.markdown-content :deep(table) { border-collapse: collapse; width: 100%; font-size: 12px; margin: 8px 0; }
+.markdown-content :deep(img) {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+}
+.markdown-content :deep(a) {
+  color: #0369a1;
+  text-decoration: underline;
+  word-break: break-all;
+}
+.markdown-content :deep(table) {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 12px;
+  margin: 8px 0;
+}
 .markdown-content :deep(th),
-.markdown-content :deep(td) { border: 1px solid #e2e8f0; padding: 4px 8px; text-align: left; }
-.markdown-content :deep(th) { background: #f1f5f9; font-weight: 700; }
-.markdown-content :deep(p) { margin: 4px 0; }
+.markdown-content :deep(td) {
+  border: 1px solid #e2e8f0;
+  padding: 4px 8px;
+  text-align: left;
+}
+.markdown-content :deep(th) {
+  background: #f1f5f9;
+  font-weight: 700;
+}
+.markdown-content :deep(p) {
+  margin: 4px 0;
+}
 .markdown-content :deep(ul),
-.markdown-content :deep(ol) { padding-left: 20px; margin: 4px 0; }
+.markdown-content :deep(ol) {
+  padding-left: 20px;
+  margin: 4px 0;
+}
 .markdown-content :deep(pre),
-.markdown-content :deep(code) { background: #f1f5f9; border-radius: 6px; font-size: 12px; }
-.markdown-content :deep(pre) { padding: 8px 12px; overflow-x: auto; }
+.markdown-content :deep(code) {
+  background: #f1f5f9;
+  border-radius: 6px;
+  font-size: 12px;
+}
+.markdown-content :deep(pre) {
+  padding: 8px 12px;
+  overflow-x: auto;
+}
 
 /* === 与 AI 助手页统一的视觉覆盖 === */
 .ai-doc-dialog {
@@ -1237,14 +1479,29 @@ onUnmounted(() => {
   background: rgba(56, 189, 248, 0.12);
 }
 
-.chat-preview {
+.chat-main {
   flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.chat-preview {
   font-size: 14px;
   color: #475569;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   font-weight: 400;
+}
+
+.chat-time {
+  font-size: 11px;
+  color: #94a3b8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .delete-session {
@@ -1312,8 +1569,7 @@ onUnmounted(() => {
   border-radius: 16px;
   padding: 20px;
   background: linear-gradient(180deg, #ffffff, #f9fafb);
-  box-shadow:
-    0 10px 30px rgba(15, 23, 42, 0.08),
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08),
     inset 0 1px 0 rgba(255, 255, 255, 0.6);
   transition: all 0.35s ease;
   position: relative;
@@ -1379,8 +1635,11 @@ onUnmounted(() => {
   padding: 16px;
   border: 1px solid #bfdbfe;
   border-radius: 16px;
-  background:
-    radial-gradient(circle at top left, rgba(56, 189, 248, 0.12), transparent 42%),
+  background: radial-gradient(
+      circle at top left,
+      rgba(56, 189, 248, 0.12),
+      transparent 42%
+    ),
     linear-gradient(180deg, #ffffff, #f8fbff);
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
 }
@@ -1531,7 +1790,11 @@ onUnmounted(() => {
   position: absolute;
   inset: 0;
   border-radius: 16px;
-  background: radial-gradient(circle at top, rgba(56, 189, 248, 0.12), transparent 60%);
+  background: radial-gradient(
+    circle at top,
+    rgba(56, 189, 248, 0.12),
+    transparent 60%
+  );
   pointer-events: none;
 }
 
@@ -1541,7 +1804,6 @@ onUnmounted(() => {
 
 .footer {
   padding: 10px;
-  margin-top: 36px;
   width: 100%;
   height: auto;
   background: #ffffff;
@@ -1589,8 +1851,15 @@ onUnmounted(() => {
 }
 
 @keyframes pulse-dot {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.5; transform: scale(0.8); }
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(0.8);
+  }
 }
 
 .step-name {
@@ -1673,23 +1942,51 @@ onUnmounted(() => {
   padding: 2px 0;
 }
 
+.thinking-hint {
+  margin-left: 6px;
+  font-size: 12px;
+  font-weight: 400;
+  color: #909399;
+}
+
 .thinking span {
   animation: dotBlink 1.5s infinite;
 }
 
-.thinking span:nth-child(1) { animation-delay: 0s; }
-.thinking span:nth-child(2) { animation-delay: 0.3s; }
-.thinking span:nth-child(3) { animation-delay: 0.6s; }
+.thinking span:nth-child(1) {
+  animation-delay: 0s;
+}
+.thinking span:nth-child(2) {
+  animation-delay: 0.3s;
+}
+.thinking span:nth-child(3) {
+  animation-delay: 0.6s;
+}
 
 @keyframes dotBlink {
-  0%, 100% { opacity: 0; }
-  50% { opacity: 1; }
+  0%,
+  100% {
+    opacity: 0;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 @keyframes bounce {
-  0%, 20%, 50%, 80%, 100% { transform: translateY(0); }
-  40% { transform: translateY(-10px); }
-  60% { transform: translateY(-5px); }
+  0%,
+  20%,
+  50%,
+  80%,
+  100% {
+    transform: translateY(0);
+  }
+  40% {
+    transform: translateY(-10px);
+  }
+  60% {
+    transform: translateY(-5px);
+  }
 }
 
 .kb-results,

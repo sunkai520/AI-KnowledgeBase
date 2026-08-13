@@ -70,14 +70,6 @@
               识别到当前模型名「{{ currentModel.modelName }}」属于 {{ nativeSearchDetected }} 系列。开启后，联网搜索优先用模型厂商自带的搜索工具，而不是本应用自带的搜索。
             </div>
           </el-form-item>
-          <el-form-item label="推理强度" v-if="activeType === 'chat' && nativeSearchDetected">
-            <el-select v-model="currentModel.reasoningEffort" style="width:100%" popper-class="dark-select-popper">
-              <el-option label="低" value="low" />
-              <el-option label="中" value="medium" />
-              <el-option label="高" value="high" />
-            </el-select>
-            <div class="tip">仅对支持推理的模型生效，非推理模型会忽略此参数。强度越高，思考越深，耗时和成本也越高。</div>
-          </el-form-item>
           <el-form-item label="上下文窗口" v-if="activeType === 'chat'">
             <el-input-number v-model="currentModel.contextWindow" :min="4000" :max="2000000" :step="1000" style="width:100%" controls-position="right" />
             <div class="tip">该模型支持的最大输入 token 数，请查看厂商文档确认，用于动态计算长期记忆压缩阈值。宁可填小不要填大，填大了起不到保护作用</div>

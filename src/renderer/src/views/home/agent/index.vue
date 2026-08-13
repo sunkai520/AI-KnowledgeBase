@@ -14,7 +14,10 @@
           <el-avatar size="24" class="ai">
             <el-icon><Cpu /></el-icon>
           </el-avatar>
-          <div class="session-preview">{{ s.lastMessage || '新会话' }}</div>
+          <div class="session-main">
+            <div class="session-preview">{{ s.lastMessage || '新会话' }}</div>
+            <div class="session-time" v-if="formatSessionTime(s)">{{ formatSessionTime(s) }}</div>
+          </div>
           <div class="del">
             <el-icon color="red" size="16" @click.stop="handleDeleteSession(s)"><Delete /></el-icon>
           </div>
@@ -320,6 +323,7 @@ import { ref, reactive, computed, nextTick, onMounted, onUnmounted, onActivated 
 import { Cpu, Delete, UserFilled, CopyDocument, Warning, FolderOpened, Bottom } from "@element-plus/icons-vue";
 import AiInput from "@renderer/components/aiInput.vue";
 import MessageAttachments from "@renderer/components/messageAttachments.vue";
+import { formatSessionTime } from "@renderer/utils/common";
 
 const TOOL_NAMES = {
   read_file:      '读取文件',
@@ -1129,10 +1133,25 @@ onUnmounted(() => { if (abortController) abortController.abort(); });
   display: none;
 }
 
-.session-preview {
+.session-main {
   flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.session-preview {
   font-size: 14px;
   color: #475569;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-time {
+  font-size: 11px;
+  color: #94a3b8;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
