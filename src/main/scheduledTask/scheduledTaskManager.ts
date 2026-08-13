@@ -27,6 +27,23 @@ import { showDesktopNotification } from '../utils/notifier';
 // 避免 embedding 维度变化导致 VectorDB 被重建后仍持有旧连接。
 const db = new Proxy({}, { get: (_target, prop) => (getDB() as any).db[prop] }) as any;
 
+// message.content 平时（Chat Completions 协议）是纯字符串；但走 Responses API 时（比如触发了
+// 原生联网搜索），@langchain/openai 会把它转成内容块数组 [{type:"text", text:"...", annotations:[]}]，
+// 直接 String(content) 会拼出 "[object Object]"。跟 chatServer/index.js 的 extractTextContent 保持一致逻辑。
+function extractTextContent(content: any): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part: any) => {
+        if (typeof part === "string") return part;
+        if (part && typeof part === "object" && typeof part.text === "string") return part.text;
+        return "";
+      })
+      .join("");
+  }
+  return content ? String(content) : "";
+}
+
 export type ScheduleType = 'interval' | 'daily';
 
 export interface ScheduledTaskRow {
@@ -275,7 +292,7 @@ ${stepLog.join('\n')}
 5. 中文，控制在 ${LEARNED_NOTES_MAX_CHARS / 2} 字以内。
 6. 只输出经验摘要本身，不要加多余的说明文字。`;
       const result = await model.invoke([{ role: 'user', content: prompt }]);
-      const notes = String((result as any)?.content ?? '').trim().slice(0, LEARNED_NOTES_MAX_CHARS);
+      const notes = extractTextContent((result as any)?.content).trim().slice(0, LEARNED_NOTES_MAX_CHARS);
       if (notes) {
         db.prepare(`UPDATE scheduled_tasks SET learnedNotes = ? WHERE id = ?`).run(notes, taskId);
         this.notifyRenderer({ id: taskId, learnedNotes: notes });
@@ -302,10 +319,21 @@ ${stepLog.join('\n')}
     const stepLog: string[] = [];
     try {
       const agentCfg = ConfigManager.getInstance().getConfig().agent;
-      const model = ModelFactory.getChatModel({
-        customConfig: { provider: agentCfg.provider, modelName: agentCfg.modelName, temperature: agentCfg.temperature },
-        tag: 'scheduledTask'
-      });
+      // 原生联网搜索复用对话页的 chat.nativeSearch 开关（同一个开关同一份行为），但按本次实际调用的
+      // 定时任务模型（agentCfg.modelName）判断厂商，命中则用厂商原生搜索替代自建爬虫，逻辑与
+      // chatServer/index.js 的 agentChat 路由保持一致——必须在创建模型之前就判断好，因为原生搜索场景
+      // 下要给 ModelFactory 传 patchResponsesAnnotations，不能等模型建完了再决定
+      const chatCfg = ConfigManager.getInstance().getConfig()?.chat || {};
+      const nativeSearchTools = chatCfg.nativeSearch ? getNativeSearchTools(agentCfg.modelName) : [];
+      const usingNativeSearch = nativeSearchTools.length > 0;
+      // 原生联网搜索场景下用 patchResponsesAnnotations 规避部分中转网关的 Responses API 流式响应丢
+      // annotations 字段导致崩溃的问题（见 patchedFetch.js 注释），跟 chatServer/textServer 保持一致；
+      // isNew 避免这个特殊 fetch 配置被缓存到普通（非原生搜索）请求的模型实例上
+      const model = ModelFactory.getChatModel(
+        usingNativeSearch
+          ? { isNew: true, customConfig: { provider: agentCfg.provider, modelName: agentCfg.modelName, temperature: agentCfg.temperature, patchResponsesAnnotations: true } }
+          : { customConfig: { provider: agentCfg.provider, modelName: agentCfg.modelName, temperature: agentCfg.temperature }, tag: 'scheduledTask' }
+      );
 
       const workDir = this.resolveWorkDir(row);
       const getWorkDir = async () => workDir;
@@ -318,11 +346,6 @@ ${stepLog.join('\n')}
       // 联网搜索 / 网页解析 / 报告生成 / 发桌面通知：都是无会话状态的独立工具（不像 execute 需要工作目录确认），
       // 且都没有真实的破坏性副作用（不会弹出可见的浏览器窗口、不会改文件系统之外的东西），
       // 风险跟"读写工作目录文件"一个级别，默认直接开放
-      // 原生联网搜索复用对话页的 chat.nativeSearch 开关（同一个开关同一份行为），但按本次实际调用的
-      // 定时任务模型（agentCfg.modelName）判断厂商，命中则用厂商原生搜索替代自建爬虫，逻辑与
-      // chatServer/index.js 的 agentChat 路由保持一致
-      const chatCfg = ConfigManager.getInstance().getConfig()?.chat || {};
-      const nativeSearchTools = chatCfg.nativeSearch ? getNativeSearchTools(agentCfg.modelName) : [];
       const tools: any[] = [
         list_workdir,
         read_workdir_file,
@@ -370,6 +393,7 @@ ${stepLog.join('\n')}
       let calledFileWriteTool = false; // 这次执行有没有真的调用过能产出文件的工具
       let calledGenerateWordOk = false; // 有没有真的成功调用过 generateWord（专门针对"指令要求 Word/PDF"这条校验）
       let calledNotifyOk = false; // 有没有真的成功调用过 send_notification
+      let lastGeneratedDocPath: string | null = null; // 本次执行已生成的最新文档路径；模型如果对结果不满意会自己重新生成，只保留最后一份，删掉工作目录里的旧草稿
       const requiresDocFormat = REQUIRES_DOC_FORMAT_RE.test(row.instruction);
 
       for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
@@ -377,7 +401,7 @@ ${stepLog.join('\n')}
         messages.push(response);
         const toolCalls = (response as any).tool_calls || [];
         if (!toolCalls.length) {
-          const candidateText = String((response as any)?.content ?? '');
+          const candidateText = extractTextContent((response as any)?.content);
           if (FILE_CLAIM_RE.test(candidateText) && !calledFileWriteTool) {
             // 模型嘴上说"已生成/已保存文件"，但这次执行压根没调用过写文件/生成文档的工具——不能直接采信，
             // 打回去让它真正执行；不 break，继续用剩余轮次给它机会，如果始终不动手，最终会耗尽轮次
@@ -451,6 +475,16 @@ ${stepLog.join('\n')}
           }
           if (call.name === 'generateWord' && !resultText.includes('生成文件失败')) {
             calledGenerateWordOk = true;
+            // 只保留本次执行最后生成的那一份：模型觉得上一版不满意会自己重新调用 generateWord，
+            // 过程中间产出的旧草稿没有留存价值，删掉避免工作目录里堆一堆同一任务的重复文件
+            const fileMatch = resultText.match(/文件：(.+)/);
+            if (fileMatch) {
+              const newDocPath = path.join(workDir, fileMatch[1].trim());
+              if (lastGeneratedDocPath && lastGeneratedDocPath !== newDocPath) {
+                try { fs.removeSync(lastGeneratedDocPath); } catch {}
+              }
+              lastGeneratedDocPath = newDocPath;
+            }
           }
           if (call.name === 'send_notification' && !resultText.trim().startsWith('❌')) {
             calledNotifyOk = true;
