@@ -244,9 +244,9 @@ function thinkingElapsedSec(msg) {
 function thinkingHint(msg) {
   const sec = thinkingElapsedSec(msg);
   if (sec < 10) return "";
-  if (sec < 60) return `（已等待 ${sec} 秒）`;
+  if (sec < 60) return `（已等待 ${sec} s）`;
   const m = Math.floor(sec / 60), s = sec % 60;
-  return `（已等待 ${m}分${s}秒，命中原生联网搜索/深度推理时模型会在服务端自主搜索，期间不会有任何增量返回，请耐心等待，通常 1~3 分钟）`;
+  return `（已等待 ${m}m${s}s，命中原生联网搜索/深度推理时模型会在服务端自主搜索，期间不会有任何增量返回，请耐心等待，通常 1~3 分钟）`;
 }
 
 const currentMessages = computed(() =>
