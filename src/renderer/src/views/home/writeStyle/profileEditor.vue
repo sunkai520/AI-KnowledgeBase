@@ -1280,7 +1280,7 @@ onUnmounted(() => {
 
 .scroll-bottom-btn {
   position: absolute;
-  bottom: 150px;
+  bottom: 200px;
   right: 32px;
   width: 40px;
   height: 40px;
