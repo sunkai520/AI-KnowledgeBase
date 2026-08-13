@@ -185,7 +185,7 @@
         </div>
       </div>
       <div style="margin-top: 36px;">
-        <QuickModelBar v-model:modelName="quickModelName" v-model:reasoningEffort="quickReasoningEffort" />
+        <QuickModelBar v-model:modelName="quickModelName" />
          <footer class="footer">
         <AiInput
           class="aiInput"
@@ -228,7 +228,6 @@ const text = ref("");
 const loading = ref(false);
 const listRef = ref(null);
 const quickModelName = ref("");
-const quickReasoningEffort = ref("");
 
 // 命中原生联网搜索/深度推理时，模型可能几分钟内不返回任何一个字（服务端自主搜索期间没有增量可转发），
 // 只靠"思考中..."几个字用户会以为卡死了，所以额外显示已等待秒数 + 长耗时提示，证明连接还活着
@@ -480,7 +479,6 @@ async function handleSend(data) {
       })),
       localChecked: data.localChecked,
       modelName: quickModelName.value,
-      reasoningEffort: quickReasoningEffort.value,
     }, abortController.signal);
 
     const reader = response.body.getReader();

@@ -4,7 +4,6 @@ import { createDeepAgent, FilesystemBackend } from "deepagents";
 import { contextEditingMiddleware, ClearToolUsesEdit, createMiddleware } from "langchain";
 import { ModelFactory } from "../../model/modelFactory";
 import { ConfigManager } from "../../config/configmangger";
-import { SettingManager } from "../../utils/settingManager";
 import { DataPathManager } from "../../utils/dataPathManager";
 import { MemorySaver } from "@langchain/langgraph";
 import { getSystemPath, getUUid, formatDate, buildMultimodalContent, estimateTokens } from "../../utils/common";
@@ -892,21 +891,10 @@ function hasAnyEnabledSkill() {
 
 const checkpointer = new MemorySaver();
 
-// 超级员工没有自己独立的推理强度配置，跟随 AI 助手页面右上角快捷切换的设置（quickReasoningEffort:chat）；
-// 逻辑和 textServer/chatServer 里对 modelOverride.reasoningEffort 的处理保持一致
-function normalizeReasoningEffort(raw) {
-  if (['low', 'medium', 'high'].includes(raw)) return raw;
-  // "none"（快捷切换里的"极速"）显式强制不带 reasoning 参数，用空字符串区分于"未传"（undefined）
-  if (raw === 'none') return '';
-  return undefined;
-}
-
-async function createAgent(effortOverride) {
+async function createAgent() {
   const config = ConfigManager.getInstance().getConfig();
   const agentCfg = config.agent || config.chat;
   const permissions = config.agentPermissions || {};
-  // 未显式传入时回退全局 chat 配置的推理强度，行为跟改造前一致
-  const reasoningEffort = effortOverride !== undefined ? effortOverride : config.chat?.reasoningEffort;
 
   // rootDir = dataDir，虚拟路径 /skills/xxx → 真实 dataDir/skills/xxx（文件工具始终覆盖整个 dataDir，不受命令执行开关影响）
   const rootDir = getDataDir();
@@ -918,10 +906,8 @@ async function createAgent(effortOverride) {
       provider: agentCfg.provider,
       modelName: agentCfg.modelName,
       temperature: agentCfg.temperature,
-      reasoningEffort,
     },
-    // tag 带上推理强度，避免 ModelFactory 缓存命中到用其他强度构建的模型实例
-    tag: `agent-main-${reasoningEffort || "none"}`,
+    tag: "agent-main",
   });
 
   // 传父目录 /skills/，lib 会自动扫描其中启用的子目录（SKILL.md 存在的）
@@ -996,14 +982,11 @@ async function createAgent(effortOverride) {
 
 let agentInstance = null;
 let agentCreating = null;
-let agentBuiltEffort; // 当前已构建 agent 所用的推理强度，undefined = 尚未构建
 
 (async () => {
   seedBuiltinSkills();
-  const initialEffort = normalizeReasoningEffort(SettingManager.getInstance().get('quickReasoningEffort:chat'));
-  agentCreating = createAgent(initialEffort);
+  agentCreating = createAgent();
   agentInstance = await agentCreating;
-  agentBuiltEffort = initialEffort;
   agentCreating = null;
   console.log("✅ DeepAgent 已初始化");
 })();
@@ -1011,19 +994,14 @@ let agentBuiltEffort; // 当前已构建 agent 所用的推理强度，undefined
 function invalidateAgent() {
   agentInstance = null;
   agentCreating = null;
-  agentBuiltEffort = undefined;
   console.log("🔄 Agent 配置已变更，下次请求时重建");
 }
 
-// effortOverride 传入时（前端本轮快捷切换的推理强度）如果和当前已构建的 agent 不一致，先失效重建
-async function getAgent(effortOverride) {
-  const effort = effortOverride !== undefined ? effortOverride : agentBuiltEffort;
-  if (agentInstance && effort !== agentBuiltEffort) invalidateAgent();
+async function getAgent() {
   if (agentInstance) return agentInstance;
   if (!agentCreating) {
-    agentCreating = createAgent(effort).then(a => {
+    agentCreating = createAgent().then(a => {
       agentInstance = a;
-      agentBuiltEffort = effort;
       agentCreating = null;
       return a;
     }).catch(err => {
@@ -1227,7 +1205,7 @@ const AUTO_MAX_ROUNDS = 25;
 const AUTO_MAX_DURATION_MS = 20 * 60 * 1000;
 
 deepChat.post("/chat", async (req, res) => {
-  const { q, session_id, uploadedDocs = [], localChecked, autoMode = true, reasoningEffort } = req.body;
+  const { q, session_id, uploadedDocs = [], localChecked, autoMode = true } = req.body;
   const permissionsForChat = ConfigManager.getInstance().getConfig().agentPermissions || {};
 
   // ★ 每次请求使用独立 thread_id，避免浏览器工具结果在 MemorySaver 里无限累积
@@ -1321,7 +1299,7 @@ deepChat.post("/chat", async (req, res) => {
   const commandPermissionLevel = getSessionPermissionLevel(session_id); // 1级confirm弹窗确认 / 2级auto自动同意
 
   try {
-    const agent = await getAgent(normalizeReasoningEffort(reasoningEffort));
+    const agent = await getAgent();
     // 把时间拼入用户消息文本，避免额外 system message 与 deepagents 内置 prompt 冲突
     let userText = `[当前时间：${formatDate(new Date().getTime())}] `;
 

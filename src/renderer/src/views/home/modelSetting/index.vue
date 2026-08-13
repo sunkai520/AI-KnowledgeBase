@@ -410,7 +410,7 @@ const form = reactive({
     siliconflow: { label: "硅基流动 (SiliconFlow)", apiKey: "", baseUrl: "https://api.siliconflow.cn/v1" },
     xkapi:     { label: "自建",           apiKey: "", baseUrl: "http://localhost:8080/v1" },
   },
-  chat:      { provider: "deepseek", modelName: "deepseek-v3.2", temperature: 0.7, streaming: true, contextWindow: 32000, nativeSearch: false, reasoningEffort: "high" },
+  chat:      { provider: "deepseek", modelName: "deepseek-v3.2", temperature: 0.7, streaming: true, contextWindow: 32000, nativeSearch: false },
   embedding: { provider: "alibaba",  modelName: "text-embedding-v4", dimensions: 1024, batchSize: 10 },
   agentPermissions: { enableShellExecute: false },
   agent: { provider: "deepseek", modelName: "deepseek-v3.2", temperature: 0.7, contextWindow: 32000 },
@@ -761,7 +761,7 @@ async function loadConfig() {
         if (saved.baseUrl) form.providers[id].baseUrl = saved.baseUrl;
       }
     }
-    if (res.chat)      Object.assign(form.chat,      { provider: res.chat.provider || "deepseek",  modelName: res.chat.modelName || "",      temperature: res.chat.temperature ?? 0.7,      streaming: res.chat.streaming ?? true, contextWindow: res.chat.contextWindow ?? 32000, nativeSearch: res.chat.nativeSearch ?? false, reasoningEffort: res.chat.reasoningEffort ?? "high" });
+    if (res.chat)      Object.assign(form.chat,      { provider: res.chat.provider || "deepseek",  modelName: res.chat.modelName || "",      temperature: res.chat.temperature ?? 0.7,      streaming: res.chat.streaming ?? true, contextWindow: res.chat.contextWindow ?? 32000, nativeSearch: res.chat.nativeSearch ?? false });
     if (res.embedding) Object.assign(form.embedding, { provider: res.embedding.provider || "alibaba", modelName: res.embedding.modelName || "", dimensions: res.embedding.dimensions ?? 1024, batchSize: res.embedding.batchSize ?? 10 });
     if (res.agentPermissions) Object.assign(form.agentPermissions, {
       enableShellExecute:  res.agentPermissions.enableShellExecute ?? false,
@@ -802,7 +802,7 @@ async function handleSave() {
   try {
     const payload = JSON.parse(JSON.stringify({
       providers:        form.providers,
-      chat:             { provider: form.chat.provider,      modelName: form.chat.modelName,      temperature: form.chat.temperature,      streaming: form.chat.streaming, contextWindow: form.chat.contextWindow, nativeSearch: form.chat.nativeSearch, reasoningEffort: form.chat.reasoningEffort },
+      chat:             { provider: form.chat.provider,      modelName: form.chat.modelName,      temperature: form.chat.temperature,      streaming: form.chat.streaming, contextWindow: form.chat.contextWindow, nativeSearch: form.chat.nativeSearch },
       embedding:        { provider: form.embedding.provider, modelName: form.embedding.modelName, dimensions: form.embedding.dimensions,  batchSize: form.embedding.batchSize },
       agentPermissions: {
         enableShellExecute:  form.agentPermissions.enableShellExecute,

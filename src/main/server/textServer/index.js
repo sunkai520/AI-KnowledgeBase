@@ -719,7 +719,6 @@ textServer.post('/aiText',async (req, res) => {
     selectedSampleIds = [],
     uploadedDocs = [],
     modelName, //前端对话框上快速切换的模型，不传则用模型配置页的全局设置
-    reasoningEffort //前端对话框上快速切换的推理强度，不传则用模型配置页的全局设置
   } =  req.body;
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
@@ -732,14 +731,10 @@ textServer.post('/aiText',async (req, res) => {
   // 否则（开关未开或模型不支持）回退到自建的抓取式搜索——写作对话框本身没有联网开关，
   // 搜索能力始终可用，这里只是决定"用哪种方式搜"，不改变"要不要搜"
   const chatCfg = ConfigManager.getInstance().getConfig()?.chat || {};
-  // 对话框上快速切换的模型/推理强度覆盖全局配置，为空则回退全局默认
+  // 对话框上快速切换的模型覆盖全局配置，为空则回退全局默认
   const effectiveModelName = (modelName || '').trim() || chatCfg.modelName;
   const modelOverride = {};
   if (modelName && modelName.trim()) modelOverride.modelName = modelName.trim();
-  if (['low', 'medium', 'high'].includes(reasoningEffort)) modelOverride.reasoningEffort = reasoningEffort;
-  // "none"（对话框上的"极速"）显式强制不带 reasoning 参数，用空字符串写入 override——
-  // 和"没传 reasoningEffort"（undefined）区分开，避免 ModelFactory 用 ?? 回退到全局默认强度
-  else if (reasoningEffort === 'none') modelOverride.reasoningEffort = '';
   const nativeSearchTools = chatCfg.nativeSearch ? getNativeSearchTools(effectiveModelName) : [];
   const usingNativeSearch = nativeSearchTools.length > 0;
   // 每个请求单独创建抓取式联网搜索工具：闭包内限制最多 5 次调用、连续失败 3 次后停止，避免模型反复换词重试
