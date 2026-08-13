@@ -579,10 +579,12 @@ async function handleSend(data) {
   scrollBottom(true);
 
   try {
+    // 超级员工没有自己的推理强度选择器，跟随 AI 助手页面右上角快捷切换的设置（quickReasoningEffort:chat）
+    const reasoningEffort = await window.electronAPI.getSetting?.("quickReasoningEffort:chat");
     const resp = await fetch("http://localhost:5120/deepAgent/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ q: content, session_id: currentSessionId.value, uploadedDocs, localChecked: data.localChecked, autoMode: true }),
+      body: JSON.stringify({ q: content, session_id: currentSessionId.value, uploadedDocs, localChecked: data.localChecked, autoMode: true, reasoningEffort }),
       signal: abortController.signal,
     });
 
