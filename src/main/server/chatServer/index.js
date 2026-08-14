@@ -712,7 +712,7 @@ chat.post('/agentChat', async (req, res) => {
         res.write(`data: ${JSON.stringify({
           type: 'model_call',
           status: 'running',
-        })}\n`);
+        })}\n\n`);
       },
 
       // LLM结束
@@ -724,7 +724,7 @@ chat.post('/agentChat', async (req, res) => {
         res.write(`data: ${JSON.stringify({
           type: 'model_call',
           status: 'end',
-        })}\n`);
+        })}\n\n`);
       },
 
       // 工具开始调用 - 关键：通知前端显示loading
@@ -738,7 +738,7 @@ chat.post('/agentChat', async (req, res) => {
           toolName,
           displayName,
           status: 'running',
-        })}\n`);
+        })}\n\n`);
 
         // 🔔 关键：通知前端工具开始执行，显示等待动画
         // res.write(`data: ${JSON.stringify({
@@ -762,7 +762,7 @@ chat.post('/agentChat', async (req, res) => {
           type: 'tool_done',
           toolName: toolNameDone,
           status: 'end',
-        })}\n`);
+        })}\n\n`);
         // const callIndex = toolCalls.findIndex(t => t.name === tool.name && t.status === 'running');
         // if (callIndex !== -1) {
         //   toolCalls[callIndex].status = 'completed';
@@ -798,7 +798,7 @@ chat.post('/agentChat', async (req, res) => {
         console.log('LLM_ERROR', { error: error.message });
         if (!responseEnded && !clientAborted) {
           responseEnded = true;
-          res.write(`data: ${JSON.stringify({ type: 'error', error: error.message })}\n`);
+          res.write(`data: ${JSON.stringify({ type: 'error', error: error.message })}\n\n`);
           res.write(`data: DONE\n\n`);
         }
       }
@@ -811,7 +811,7 @@ chat.post('/agentChat', async (req, res) => {
       return;
     }
     if (!responseEnded) {
-      res.write(`data: ${JSON.stringify({ type: 'error', error: err.message })}\n`);
+      res.write(`data: ${JSON.stringify({ type: 'error', error: err.message })}\n\n`);
       responseEnded = true;
       res.write(`data: DONE\n\n`);
       res.end();
@@ -824,7 +824,7 @@ chat.post('/agentChat', async (req, res) => {
         // 工具完成：把结果推给前端展示
         const toolResultEvent = buildToolResultEvent(chunk[0].name, chunk[0].content);
         if (toolResultEvent) {
-          res.write(`data: ${JSON.stringify(toolResultEvent)}\n`);
+          res.write(`data: ${JSON.stringify(toolResultEvent)}\n\n`);
         }
         if (!tool.includes(toolsMaps[chunk[0]?.name] || chunk[0]?.name)) {
           tool += (toolsMaps[chunk[0]?.name] || chunk[0]?.name) + ' | ';
@@ -833,7 +833,7 @@ chat.post('/agentChat', async (req, res) => {
         const textContent = extractTextContent(chunk[0]?.content);
         if (textContent) {
           str += textContent;
-          res.write(`data: ${JSON.stringify({...chunk[0], content: textContent, tool: tool})}\n`);
+          res.write(`data: ${JSON.stringify({...chunk[0], content: textContent, tool: tool})}\n\n`);
         }
       }
     }
@@ -845,7 +845,7 @@ chat.post('/agentChat', async (req, res) => {
     }
     if (!responseEnded) {
       responseEnded = true;
-      res.write(`data: ${JSON.stringify({ type: 'error', error: err.message })}\n`);
+      res.write(`data: ${JSON.stringify({ type: 'error', error: err.message })}\n\n`);
       res.write(`data: DONE\n\n`);
     }
     res.end();
