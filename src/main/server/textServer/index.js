@@ -35,6 +35,7 @@ import {
   SystemMessage
 } from "langchain";
 import { createSearchTool, parseWebPage, getNativeSearchTools } from "../../model/tools"
+import { extractTextContent, buildToolResultEvent } from "../../model/agentStreamUtils";
 import { ConfigManager } from '../../config/configmangger';
 import { searchProfileWritingSamples } from "../writeStyleServer/profileSampleSearch";
 import path from "path";
@@ -64,24 +65,6 @@ function safeJsonParse(value, fallback) {
   } catch {
     return fallback;
   }
-}
-
-// message.content 平时（Chat Completions 协议）是纯字符串；但命中原生联网搜索走 Responses API 时，
-// @langchain/openai 会把它转成内容块数组 [{type:"text", text:"...", annotations:[]}]。这里统一抹平成
-// 字符串，避免下游 str += content / 推给前端的逻辑（按字符串写的）把数组隐式 toString() 拼出 "[object Object]"。
-// 和 chatServer/index.js 里的 extractTextContent 保持一致逻辑。
-function extractTextContent(content) {
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content
-      .map((part) => {
-        if (typeof part === "string") return part;
-        if (part && typeof part === "object" && typeof part.text === "string") return part.text;
-        return "";
-      })
-      .join("");
-  }
-  return content ? String(content) : "";
 }
 
 // 把上游模型/接口报错转成用户能看懂的中文提示，未识别的错误类型原样把 message 透出
@@ -935,20 +918,8 @@ textServer.post('/aiText',async (req, res) => {
           tool += (toolsMap[toolName] || toolName) + ";";
         }
         if (streamEvents) {
-          try {
-            const parsed = typeof message.content === "string" ? JSON.parse(message.content) : message.content;
-            if (toolName === "webSearch" && parsed?.results?.length) {
-              writeEvent({ type: "tool_result", toolName: "webSearch", results: parsed.results });
-            } else if (toolName === "parseWebPage" && parsed?.success) {
-              writeEvent({
-                type: "tool_result",
-                toolName: "parseWebPage",
-                parseResult: { title: parsed.title, url: parsed.url, markdown: parsed.markdown },
-              });
-            }
-          } catch (e) {
-            // 工具结果解析失败时不展示细节，不影响正文继续生成
-          }
+          const toolResultEvent = buildToolResultEvent(toolName, message.content);
+          if (toolResultEvent) writeEvent(toolResultEvent);
         }
         continue;
       }

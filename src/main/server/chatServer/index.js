@@ -50,6 +50,7 @@ import {
 import { SettingManager } from '../../utils/settingManager';
 import { ConfigManager } from '../../config/configmangger';
 import { processMemoryExtraction, retrieveRelevantMemories } from '../../model/memoryExtractor';
+import { extractTextContent, buildToolResultEvent } from '../../model/agentStreamUtils';
 // @ts-ignore
 import {
   setLog
@@ -67,23 +68,6 @@ function getChatMemoryTokenBudget() {
   const chatConfig = ConfigManager.getInstance().getConfig()?.chat || {};
   const contextWindow = Number(chatConfig.contextWindow) || DEFAULT_CONTEXT_WINDOW;
   return Math.floor(contextWindow * 0.35);
-}
-
-// message.content 平时（Chat Completions 协议）是纯字符串；但走 Responses API 时（比如触发了
-// 原生联网搜索），@langchain/openai 会把它转成内容块数组 [{type:"text", text:"...", annotations:[]}]。
-// 这里统一抹平成字符串，避免下游 str += content / 推给前端的逻辑（按字符串写的）拼出 "[object Object]"。
-function extractTextContent(content) {
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content
-      .map((part) => {
-        if (typeof part === "string") return part;
-        if (part && typeof part === "object" && typeof part.text === "string") return part.text;
-        return "";
-      })
-      .join("");
-  }
-  return content ? String(content) : "";
 }
 
 // 单次请求内（一次 agent.stream 调用期间）的兜底：工具调用结果如果在这一轮里越堆越大，
@@ -838,31 +822,9 @@ chat.post('/agentChat', async (req, res) => {
     for await (const chunk of stream) {
       if (chunk[0] instanceof ToolMessage) {
         // 工具完成：把结果推给前端展示
-        if (chunk[0].name === 'webSearch' || chunk[0].name === 'parseWebPage' || chunk[0].name === 'searchLocalKB') {
-          try {
-            const parsed = typeof chunk[0].content === 'string'
-              ? JSON.parse(chunk[0].content)
-              : chunk[0].content;
-            if (chunk[0].name === 'webSearch' && parsed?.results?.length) {
-              res.write(`data: ${JSON.stringify({
-                type: 'tool_result',
-                toolName: 'webSearch',
-                results: parsed.results,
-              })}\n`);
-            } else if (chunk[0].name === 'searchLocalKB' && parsed?.results?.length) {
-              res.write(`data: ${JSON.stringify({
-                type: 'tool_result',
-                toolName: 'searchLocalKB',
-                results: parsed.results,
-              })}\n`);
-            } else if (chunk[0].name === 'parseWebPage' && parsed?.success) {
-              res.write(`data: ${JSON.stringify({
-                type: 'tool_result',
-                toolName: 'parseWebPage',
-                parseResult: { title: parsed.title, url: parsed.url, markdown: parsed.markdown },
-              })}\n`);
-            }
-          } catch (e) { /* 解析失败忽略 */ }
+        const toolResultEvent = buildToolResultEvent(chunk[0].name, chunk[0].content);
+        if (toolResultEvent) {
+          res.write(`data: ${JSON.stringify(toolResultEvent)}\n`);
         }
         if (!tool.includes(toolsMaps[chunk[0]?.name] || chunk[0]?.name)) {
           tool += (toolsMaps[chunk[0]?.name] || chunk[0]?.name) + ' | ';

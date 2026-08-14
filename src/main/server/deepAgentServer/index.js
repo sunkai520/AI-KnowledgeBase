@@ -891,6 +891,21 @@ function hasAnyEnabledSkill() {
 
 const checkpointer = new MemorySaver();
 
+// deepagents 的 FilesystemMiddleware / SubAgentMiddleware 内置了同名工具，非沙箱 backend 下会把
+// finalTools 里撞名的自定义工具静默过滤掉（不报错，模型只是调不到）。来源见
+// node_modules/deepagents/dist/index.cjs 里各内置工具的 name 字段；如果升级 deepagents 后这些内置
+// 工具改了名字，需要同步更新这个集合。
+const RESERVED_DEEPAGENT_TOOL_NAMES = new Set(["ls", "read_file", "write_file", "edit_file", "glob", "grep", "execute", "task"]);
+
+function validateNoReservedToolNameCollision(tools) {
+  const conflicts = tools.filter((t) => t?.name && RESERVED_DEEPAGENT_TOOL_NAMES.has(t.name)).map((t) => t.name);
+  if (conflicts.length) {
+    throw new Error(
+      `工具名与 deepagents 内置保留工具名冲突，会被静默过滤导致模型调不到：${conflicts.join(", ")}。请给这些工具改名。`
+    );
+  }
+}
+
 async function createAgent() {
   const config = ConfigManager.getInstance().getConfig();
   const agentCfg = config.agent || config.chat;
@@ -933,8 +948,10 @@ async function createAgent() {
     },
   });
   // 命令执行工具：限定在会话工作目录内、禁止切目录/越权路径的弱隔离 run_command（详见 agentTools.js）
-  // 注意：工具名不能叫 "execute"——deepagents 的 FilesystemMiddleware 保留了这个名字，
-  // 非沙箱 backend 下会把任何叫这个名字的工具（包括我们自己的）从最终请求里过滤掉。
+  // 注意：工具名不能撞上 deepagents FilesystemMiddleware/SubAgentMiddleware 内置保留的工具名
+  // （ls/read_file/write_file/edit_file/glob/grep/execute/task）——非沙箱 backend 下会把同名的自定义
+  // 工具从最终请求里静默过滤掉，模型调用时会发现工具"消失了"却不报错，很难排查。
+  // 下面 validateNoReservedToolNameCollision() 把这条约束从注释变成启动时的显式校验。
   const { execute } = createExecuteTool({ getSessionWorkDir, getPermissionLevel: getSessionPermissionLevel });
   // 工作目录只读浏览/读取工具：不依赖命令执行开关，只要设置了工作目录就一直可用
   const { list_workdir, read_workdir_file } = createWorkdirReadTools({ getSessionWorkDir });
@@ -958,6 +975,7 @@ async function createAgent() {
     read_workdir_file,
     ...(permissions.enableShellExecute ? [execute] : []),
   ];
+  validateNoReservedToolNameCollision(finalTools);
 
   return await createDeepAgent({
     backend,
