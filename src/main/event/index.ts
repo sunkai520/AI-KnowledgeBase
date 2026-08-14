@@ -140,8 +140,12 @@ export function initEvent(ipcMain, mainWindow) {
       };
     });
     ipcMain.handle('dataPath:setDir', (_event, dir: string) => {
-      DataPathManager.getInstance().setDataDir(dir);
-      return { success: true };
+      try {
+        DataPathManager.getInstance().setDataDir(dir);
+        return { success: true };
+      } catch (e: any) {
+        return { success: false, error: e?.message || '设置数据目录失败' };
+      }
     });
     ipcMain.handle('dataPath:selectDir', async () => {
       const result = await dialog.showOpenDialog({

@@ -75,11 +75,16 @@ async function confirm() {
   if (!selectedDir.value) return;
   saving.value = true;
   try {
-    await window.electronAPI.setDataDir(selectedDir.value);
+    const res = await window.electronAPI.setDataDir(selectedDir.value);
+    if (!res?.success) {
+      ElMessage.error(res?.error || '保存失败，请重试');
+      saving.value = false;
+      return;
+    }
     ElMessage.success('设置成功！');
     router.replace('/index');
   } catch (e) {
-    ElMessage.error('保存失败，请重试');
+    ElMessage.error(e?.message || '保存失败，请重试');
     saving.value = false;
   }
 }
