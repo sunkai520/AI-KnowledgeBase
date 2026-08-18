@@ -142,6 +142,9 @@ export function initEvent(ipcMain, mainWindow) {
     ipcMain.handle('dataPath:setDir', (_event, dir: string) => {
       try {
         DataPathManager.getInstance().setDataDir(dir);
+        // 首次安装时 ScheduledTaskManager.init() 在数据目录确定前是跳过的（见 scheduledTaskManager.ts），
+        // 目录选好后在这里补跑一次；已经 init 过的情况下这里是安全的空操作
+        ScheduledTaskManager.getInstance().init();
         return { success: true };
       } catch (e: any) {
         return { success: false, error: e?.message || '设置数据目录失败' };

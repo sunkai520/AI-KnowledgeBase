@@ -173,9 +173,12 @@ export class ScheduledTaskManager {
     }
   }
 
-  // 应用启动时调用一次；内部有 initialized 保护，重复调用（如 macOS 多次 createWindow）是安全的空操作
+  // 应用启动时调用一次；内部有 initialized 保护，重复调用（如 macOS 多次 createWindow）是安全的空操作。
+  // 首次安装、用户还没在引导页选数据目录时先跳过——避免过早触碰 getDB() 单例，在默认目录下建一个
+  // 用不到的 rag.db 孤儿文件。数据目录确定后（dataPath:setDir 成功）会由主流程再调用一次 init()。
   init() {
     if (this.initialized) return;
+    if (!DataPathManager.getInstance().isConfigured()) return;
     this.ensureTable();
     this.initialized = true;
 
