@@ -49,7 +49,14 @@
       </div>
 
       <!-- 对话列表 -->
-      <div ref="listRef" class="bubble-list">
+      <div class="bubble-list-wrap">
+      <div
+        ref="listRef"
+        class="bubble-list"
+        @scroll="handleScroll"
+        @wheel="handleUserScrollIntent"
+        @touchstart="handleUserScrollIntent"
+      >
         <div
           v-for="(msg, idx) in currentMessages"
           :key="idx"
@@ -184,6 +191,18 @@
           </div>
         </div>
       </div>
+      <transition name="fade">
+        <button
+          v-if="showJumpToBottom"
+          type="button"
+          class="jump-to-bottom-btn"
+          @click="jumpToBottom"
+        >
+          <el-icon><ArrowDown /></el-icon>
+          回到底部
+        </button>
+      </transition>
+      </div>
       <div style="margin-top: 36px;">
         <QuickModelBar v-model:modelName="quickModelName" />
          <footer class="footer">
@@ -208,6 +227,7 @@ import {
   UserFilled,
   Delete,
   CopyDocument,
+  ArrowDown,
 } from "@element-plus/icons-vue";
 import AiInput from "../../../components/aiInput.vue";
 import QuickModelBar from "../../../components/quickModelBar.vue";
@@ -296,41 +316,95 @@ function delChatSession(chat, index) {
       // 删除的正是当前激活的对话：切到相邻对话后，还要实际加载它的消息，
       // 否则右侧只是换了个 index，内容还是空的/上一个对话的残留
       await loadChatMessages(chats.value[currentChatIndex.value]);
+      resetScrollState();
       scrollBottom(true);
     } else if (index < currentChatIndex.value) {
       currentChatIndex.value--;
     }
   });
 }
-let scrollTimer = null;
+// 用户是否手动往上翻看了历史（离开了底部）。一旦为 true，生成过程中不再自动贴底，避免打断阅读；
+// 只有用户自己滚回底部，或点了"回到底部"按钮，才会恢复
+const userScrolledUp = ref(false);
+// 悬浮的"回到底部"按钮是否显示，跟 userScrolledUp 同步，拆成两个变量只是语义上更清楚
+const showJumpToBottom = ref(false);
 
-// #5: 判断是否接近底部（60px 阈值），用户向上滚动查看历史时不强制跳到底
-function isNearBottom() {
-  if (!listRef.value) return true;
+function distanceFromBottom() {
+  if (!listRef.value) return 0;
   const { scrollTop, scrollHeight, clientHeight } = listRef.value;
-  return scrollHeight - scrollTop - clientHeight < 60;
+  return scrollHeight - scrollTop - clientHeight;
+}
+
+// 监听列表原生的 scroll 事件来判断"用户是否离开了底部"，而不是像以前那样每次内容更新时
+// 临时算一下——程序自己贴底触发的 scroll 事件此时距离已经是 0，不会被误判成用户往上翻了；
+// 只有真的发生了滚动位移、且离底部超过阈值时才会置位
+function handleScroll() {
+  const away = distanceFromBottom() > 60;
+  userScrolledUp.value = away;
+  showJumpToBottom.value = away;
+}
+
+// 滚轮/触屏是原生同步事件，保证在下一次 requestAnimationFrame 之前就已经处理完——
+// 用它在"用户刚开始尝试往上滚"的瞬间立刻叫停强制贴底循环，不必等 scroll 事件算出
+// 累计滚动量超过阈值才反应过来，否则每一帧的强制贴底会把还没攒够阈值的滚动量摁回去，
+// 表现为"生成过程中完全滚不动"
+function handleUserScrollIntent() {
+  userScrolledUp.value = true;
+  showJumpToBottom.value = true;
+}
+
+function resetScrollState() {
+  userScrolledUp.value = false;
+  showJumpToBottom.value = false;
+}
+
+function jumpToBottom() {
+  resetScrollState();
+  scrollBottom(true);
 }
 
 function scrollBottom(immediate = false) {
-  if (immediate) {
-    nextTick(() => {
-      if (listRef.value) listRef.value.scrollTop = listRef.value.scrollHeight;
-    });
-    return;
-  }
-  // 用户已向上滚动查看历史时，不打断阅读
-  if (!isNearBottom()) return;
-  if (scrollTimer) return;
-  scrollTimer = requestAnimationFrame(() => {
+  if (!immediate && userScrolledUp.value) return;
+  nextTick(() => {
     if (listRef.value) listRef.value.scrollTop = listRef.value.scrollHeight;
-    scrollTimer = null;
   });
+}
+
+// 是否正在查看"当前有回复正在流式生成"的那个会话——避免生成过程中用户切到别的会话，
+// 还在把别的会话的视图往下拽
+function isViewingGeneratingChat() {
+  return !!generatingChat && generatingChat === chats.value[currentChatIndex.value];
+}
+
+// 以前是"每来一段流式文字就手动滚一次"，但真正把文字画到 DOM 上是子组件 markDwon.vue
+// 自己另开的一个 requestAnimationFrame（流式期间批量渲染，见该组件里的注释）。两个 rAF 谁先谁后
+// 不确定，滚动经常读到的是上一帧的旧高度，导致视图永远追不上，还经常因为一次大跳动（代码块、图片
+// 加载完成撑高等）被 60px 阈值误判成"用户往上翻走了"，从而彻底停止自动跟随。
+// 改成生成期间持续运行一个 rAF 循环，每一帧都强制贴底（前提是用户没有手动往上翻）——不管是谁在
+// 什么时候把内容撑高，下一帧都会被纠正回来，不再依赖"猜时机"。
+let followRafId = null;
+function startFollowStream() {
+  if (followRafId) return;
+  const step = () => {
+    if (loading.value && isViewingGeneratingChat() && !userScrolledUp.value && listRef.value) {
+      listRef.value.scrollTop = listRef.value.scrollHeight;
+    }
+    followRafId = loading.value ? requestAnimationFrame(step) : null;
+  };
+  followRafId = requestAnimationFrame(step);
+}
+function stopFollowStream() {
+  if (followRafId) {
+    cancelAnimationFrame(followRafId);
+    followRafId = null;
+  }
 }
 
 async function selectChat(idx) {
   currentChatIndex.value = idx;
   await loadChatMessages(chats.value[idx]);
-  scrollBottom();
+  resetScrollState();
+  scrollBottom(true);
 }
 
 async function loadChatMessages(chat) {
@@ -376,11 +450,13 @@ async function createNewChat() {
   chat.messagesLoaded = true;
   chats.value.unshift(chat);
   currentChatIndex.value = 0;
-  scrollBottom();
+  resetScrollState();
+  scrollBottom(true);
 }
 function stopGeneration() {
   if (!abortController) return;
 
+  stopFollowStream();
   abortController.abort();
   abortController = null;
   loading.value = false;
@@ -404,6 +480,7 @@ onUnmounted(() => {
     abortController.abort();
   }
   if (tickTimer) clearInterval(tickTimer);
+  stopFollowStream();
 });
 let abortController = null;
 let generatingChat = null; // 当前正在流式生成的对话对象引用，与"用户正在看哪个对话"（currentChatIndex）解耦
@@ -466,7 +543,12 @@ async function handleSend(data) {
     stepsExpanded: true,
   });
 
-  if (isStillViewing()) scrollBottom();
+  // 用户发送新消息视为主动回到底部的意图，不管之前是否往上翻过历史
+  if (isStillViewing()) {
+    resetScrollState();
+    scrollBottom(true);
+    startFollowStream();
+  }
   try {
     const response = await getAnswer({
       q: userText,
@@ -503,8 +585,9 @@ async function handleSend(data) {
         }
         abortController = null;
         generatingChat = null;
-        // 和流式过程中每个 chunk 一样，只在用户本来就停留在底部时才跟随滚动，
-        // 避免用户往上翻看历史时被 AI 说完话硬拽回底部
+        stopFollowStream();
+        // 流式期间的贴底交给上面启动的 rAF 循环处理了，这里只在生成结束时补一次精确对齐，
+        // 且只在用户本来就停留在底部时才滚动，避免用户往上翻看历史时被 AI 说完话硬拽回底部
         if (isStillViewing()) scrollBottom();
         break;
       }
@@ -567,7 +650,8 @@ async function handleSend(data) {
           console.error('SSE 解析错误:', e, line);
         }
       }
-      if (isStillViewing()) scrollBottom();
+      // 每帧贴底交给 startFollowStream() 起的 rAF 循环处理，这里不用再逐 chunk 手动滚——
+      // 避免和子组件 markDwon.vue 自己那个流式渲染用的 rAF 抢跑，导致滚动永远读到上一帧的旧高度
     }
 
   } catch (err) {
@@ -584,6 +668,7 @@ async function handleSend(data) {
     loading.value = false;
     abortController = null;
     generatingChat = null;
+    stopFollowStream();
   }
 }
 function friendlyError(raw = "") {
@@ -623,7 +708,7 @@ async function getSessionList() {
   console.log(res, "res111");
 }
 onMounted(() => {
-  scrollBottom();
+  scrollBottom(true);
   getSessionList();
 });
 </script>
@@ -1063,6 +1148,14 @@ onMounted(() => {
 }
 
 /* === 聊天气泡列表 === */
+.bubble-list-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0; /* 让 .bubble-list 出现自己的滚动条，而不是撑高整个父容器 */
+  display: flex;
+  flex-direction: column;
+}
+
 .bubble-list {
   flex: 1;
   overflow-y: auto;
@@ -1070,6 +1163,40 @@ onMounted(() => {
   flex-direction: column;
   gap: 12px;
   padding: 10px;
+}
+
+/* 悬浮的"回到底部"按钮：定位在消息区右下角，不随内容滚动 */
+.jump-to-bottom-btn {
+  position: absolute;
+  right: 20px;
+  bottom: 16px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 16px;
+  border: 1px solid #38bdf8;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #0284c7;
+  font-size: 13px;
+  cursor: pointer;
+  box-shadow: 0 6px 16px rgba(56, 189, 248, 0.28);
+  transition: background 0.2s, color 0.2s, transform 0.2s;
+}
+.jump-to-bottom-btn:hover {
+  background: #38bdf8;
+  color: #ffffff;
+  transform: translateY(-1px);
+}
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+  transform: translateY(6px);
 }
 
 .bubble {
